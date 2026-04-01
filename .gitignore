@@ -1,0 +1,34 @@
+# ── AI Agent Tooling ──────────────────────────────────────────────────────────
+# Local agent config, skills, and research — not part of the published module
+.agents/
+AGENTS.md
+Research.txt
+Research/
+
+# ── PowerShell ────────────────────────────────────────────────────────────────
+# Module build output
+Release/
+Build/
+*.nupkg
+*.zip
+
+# Pester test results
+TestResults/
+*.xml
+
+# ── Windows ───────────────────────────────────────────────────────────────────
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Editors ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+tempnote.txt
