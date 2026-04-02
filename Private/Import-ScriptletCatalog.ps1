@@ -42,17 +42,18 @@ function Import-ScriptletCatalog {
     $requiredFields = @('Id', 'Name', 'DisplayName', 'Category', 'Description', 'ExecutionContext', 'Script', 'Version')
     $validContexts = @('System', 'User', 'Auto')
 
-    $validatedCatalog = [System.Collections.Generic.List[PSCustomObject]]::new()
-    $catalogArray = @($catalog)
+    # Optimization: Get count once to pre-allocate list capacity and avoid redundant array copy
+    $catalogCount = if ($null -eq $catalog) { 0 } else { @($catalog).Count }
+    $validatedCatalog = [System.Collections.Generic.List[PSCustomObject]]::new($catalogCount)
 
-    foreach ($entry in $catalogArray) {
+    foreach ($entry in $catalog) {
         $isValid = $true
         $entryId = if ($null -ne $entry.Id) { $entry.Id } else { '(unknown)' }
 
         #region Check required fields
         foreach ($field in $requiredFields) {
             $value = $entry.$field
-            if ($null -eq $value -or ([string]$value).Trim() -eq '') {
+            if ([string]::IsNullOrWhiteSpace($value)) {
                 Write-Warning "Import-ScriptletCatalog: Scriptlet $entryId is missing required field: $field"
                 $isValid = $false
             }
@@ -93,6 +94,6 @@ function Import-ScriptletCatalog {
         }
     }
 
-    Write-Verbose "Import-ScriptletCatalog: Validated $($validatedCatalog.Count) of $($catalogArray.Count) scriptlets."
+    Write-Verbose "Import-ScriptletCatalog: Validated $($validatedCatalog.Count) of $catalogCount scriptlets."
     return $validatedCatalog.ToArray()
 }
