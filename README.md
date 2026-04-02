@@ -15,7 +15,7 @@ When running PowerShell as `NT AUTHORITY\SYSTEM` through RMM software (Zoho Assi
 - **Special characters are hostile** — pipes `|`, braces `{ }`, backticks, and `$()` are painful or impossible to type
 - **No user profile** — `$env:USERPROFILE`, `$HOME`, and `$env:PSModulePath` point nowhere useful
 - **No internet** — you can't `Install-Module` or pull scripts from GitHub on a locked-down endpoint
-- **Need user context** — tasks like printer mapping, HKCU registry, Teams cache clearing must run as the logged-on user, not SYSTEM
+- **Need user context** — tasks like HKCU registry, AppData application updates, and user-profile cleanup must run as the logged-on user, not SYSTEM
 
 ## The Solution
 
@@ -72,12 +72,12 @@ Import-Module "C:\ProgramData\Indago\Indago.psd1"
 Get-IndagoList
 
 # Get help for a specific task
-Get-IndagoHelp -Name DiagnoseWindowsUpdate
+Get-IndagoHelp -Name WUQuickHealth
 
 # Run a task
-Invoke-Indago -Name GetSystemOverview
-Invoke-Indago -Name DiagnoseWindowsUpdate
-Invoke-Indago -Name DiagnoseDefenderSensor
+Invoke-Indago -Name WUQuickHealth
+Invoke-Indago -Name DEFStatusTriage
+Invoke-Indago -Name BLStatusSnapshot
 
 # Check who's logged in
 Get-LoggedOnUser
@@ -107,9 +107,9 @@ Invoke-Indago -Name <TaskName> [-Param1 <string>] [-Param2 <string>] ... [-Param
 **Examples:**
 
 ```powershell
-Invoke-Indago -Name DiagnoseWindowsUpdate
-Invoke-Indago -Name DiagnoseWindowsUpdate -Param1 "7" -Verbose
-Invoke-Indago -Name InstallPrinter -Param1 "Reception" -Param2 "\\print\srv01\reception"
+Invoke-Indago -Name WUQuickHealth
+Invoke-Indago -Name WUQuickHealth -Param1 "7" -Verbose
+Invoke-Indago -Name WingetUpgradeSystemSilent
 ```
 
 ### `Get-IndagoList`
@@ -156,9 +156,13 @@ Scriptlets are pre-built PowerShell tasks stored in `Scriptlets/ScriptletCatalog
 
 | Id | Name | Category | Context | Description |
 |---|---|---|---|---|
-| WU001 | `DiagnoseWindowsUpdate` | WindowsUpdate | System | Checks WU/BITS service health, disk space, pending reboot, WSUS config, recent failure history, and SoftwareDistribution size |
-| DEF001 | `DiagnoseDefenderSensor` | DefenderEndpoint | System | Checks MsSense/WinDefend services, onboarding status, AV definitions, real-time/tamper protection, third-party AV, and cloud connectivity |
-| SYS001 | `GetSystemOverview` | SystemHealth | System | OS version/build, uptime, disk space, RAM usage, pending reboot, domain status, logged-on user, Windows license |
+| WU001 | `WUQuickHealth` | WindowsUpdate | System | 30-second triage: services, disk space, pending reboots, recent failures with HRESULT translation, cache size, and last update date |
+| DEF001 | `DEFStatusTriage` | DefenderEndpoint | System | Security Center AV bitmask decoding, Defender mode, RTP, definitions, services, MDE sensor, and signal gap analysis |
+| APP001 | `WingetUpgradeSystemSilent` | Applications | System | Runs winget upgrade --all as SYSTEM to silently update all machine-wide installed applications |
+| APP002 | `WingetUpgradeUserApps` | Applications | User | Runs winget upgrade --all --scope user as the logged-on user to update user-scoped applications |
+| INT001 | `IntuneForceComplianceCheck` | Intune | System | Triggers a forced Intune compliance evaluation via the Intune Management Extension agent |
+| BL001 | `BLStatusSnapshot` | BitLocker | System | Volume encryption status with ghost-state detection, OS drive letter validation, last BitLocker event, and BDESVC health |
+| FW001 | `FWStatusTriage` | Firewall | System | Firewall profile status with active adapter correlation, Security Center cross-reference for ghost detection, and MpsSvc health |
 
 ### Execution Contexts
 
@@ -302,9 +306,9 @@ $script:IndagoState = @{
 All task executions are logged to `C:\ProgramData\Indago\Logs\Indago_YYYY-MM-DD.log` as tab-delimited entries:
 
 ```
-2026-03-29 14:30:01	DiagnoseWindowsUpdate	System	N/A	Success	2341ms	
-2026-03-29 14:31:15	InstallPrinter	User	DOMAIN\jsmith	Success	1204ms	
-2026-03-29 14:32:00	RepairDefender	System	N/A	Error	502ms	MsSense service not found
+2026-03-29 14:30:01	WUQuickHealth	System	N/A	Success	2341ms	
+2026-03-29 14:31:15	WingetUpgradeUserApps	User	DOMAIN\jsmith	Success	1204ms	
+2026-03-29 14:32:00	DEFStatusTriage	System	N/A	Error	502ms	MsSense service not found
 ```
 
 Logging never crashes a task — failures are demoted to warnings.
