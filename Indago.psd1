@@ -4,7 +4,7 @@
     ModuleVersion        = '1.0.0'
     GUID                 = 'b0269411-6c65-49f9-b9f9-4195117af5e7'
     Author               = 'Frantz Dhin'
-    CompanyName          = 'Frantz Dhin'
+    CompanyName          = 'ENVO IT A/S'
     Copyright            = '(c) 2026 Frantz Dhin. All rights reserved.'
 
     # Description (shown on PSGallery listing page)
@@ -90,10 +90,10 @@ Key features:
             )
 
             # License
-            LicenseUri               = 'https://github.com/frantzdhin/Indago/blob/main/LICENSE'
+            LicenseUri               = 'https://github.com/fdhin/Indago/blob/main/LICENSE'
 
             # Project page
-            ProjectUri               = 'https://github.com/frantzdhin/Indago'
+            ProjectUri               = 'https://github.com/fdhin/Indago'
 
             # Release notes (shown on PSGallery version page)
             ReleaseNotes             = @'
@@ -108,9 +108,13 @@ Initial release.
 - Get-LoggedOnUser: Show the currently logged-on interactive user
 
 ### Built-in Scriptlets
-- WU001 DiagnoseWindowsUpdate: Windows Update service health, failure history, WSUS config
-- DEF001 DiagnoseDefenderSensor: MDE sensor, onboarding, AV status, cloud connectivity
-- SYS001 GetSystemOverview: OS, uptime, disk, RAM, reboot flags, domain, license
+- WU001 WUQuickHealth: Windows Update triage -- services, disk, reboots, failure history with HRESULT translation
+- DEF001 DEFStatusTriage: Security Center AV decoding, Defender mode, RTP, definitions, MDE sensor, signal gap analysis
+- APP001 WingetUpgradeSystemSilent: Silent machine-wide application updates via winget
+- APP002 WingetUpgradeUserApps: User-scoped application updates via winget (runs as logged-on user)
+- INT001 IntuneForceComplianceCheck: Force Intune compliance evaluation
+- BL001 BLStatusSnapshot: BitLocker volume status, ghost-state detection, event analysis, BDESVC health
+- FW001 FWStatusTriage: Firewall profiles, Security Center cross-reference, ghost detection, MpsSvc health
 
 ### Engine
 - User-context execution via Win32 CreateProcessAsUser (based on RunAsUser)
