@@ -55,7 +55,7 @@ function Invoke-AsUser {
         $maxLength = 32767
         if ($pwshArgs.Length -gt $maxLength) {
             Write-Verbose 'Invoke-AsUser: Encoded command exceeds command line limit. Using CacheToDisk mode.'
-            return Invoke-AsUserCacheToDisk -ScriptText $ScriptText -TimeoutMs $TimeoutMs
+            return Invoke-AsUserCacheToDisk -ScriptText $ScriptText -TimeoutMs $TimeoutMs -LoggedOnUser $loggedOnUser
         }
 
         Write-Verbose "Invoke-AsUser: Executing as $($loggedOnUser.FullName) (hidden, elevated, breakaway)"
@@ -95,7 +95,10 @@ function Invoke-AsUserCacheToDisk {
         [string]$ScriptText,
 
         [Parameter(Mandatory = $false)]
-        [int]$TimeoutMs = 300000
+        [int]$TimeoutMs = 300000,
+
+        [Parameter(Mandatory = $true)]
+        [PSCustomObject]$LoggedOnUser
     )
 
     $tempDir = Join-Path -Path $env:SystemRoot -ChildPath 'Temp'
@@ -109,7 +112,7 @@ function Invoke-AsUserCacheToDisk {
         try {
             $acl = Get-Acl -Path $tempFile -ErrorAction Stop
             $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                'BUILTIN\Users', 'ReadAndExecute', 'Allow'
+                $LoggedOnUser.FullName, 'ReadAndExecute', 'Allow'
             )
             $acl.AddAccessRule($rule)
             Set-Acl -Path $tempFile -AclObject $acl -ErrorAction Stop
