@@ -210,6 +210,147 @@ WU001 is deliberately scoped to fast vital signs. The following concerns are han
 
 ---
 
+### WU002 -- WUPolicyAudit
+
+**Version:** 1.0
+**Category:** WindowsUpdate
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Read-only audit of every GPO, MDM/Intune, and UX-level policy setting governing Windows Update behavior. In managed environments, a stale WSUS pointer, an overly aggressive deferral period, or a user-initiated pause is the single most common cause of silent update failure -- machines that look enrolled and healthy but quietly stop patching for weeks.
+
+WU001 tells the tech "updates are failing." WU002 tells them "here is the exact policy configuration causing it."
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name WUPolicyAudit
+```
+
+No parameters. The script reads all relevant registry paths automatically.
+
+#### What It Checks
+
+The script audits three disjoint registry layers that can conflict or silently override each other:
+
+**GPO Policy Layer** (`HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate` and `\AU`):
+
+| Check | Registry Key | Verdicts |
+|-------|-------------|----------|
+| WSUS Server | `WUServer`, `WUStatusServer`, `UseWUServer` | `[OK]` if not configured or reachable. `[!!]` if configured but unreachable (3s TCP timeout). `[!]` if URL set but not enforced. |
+| Automatic Updates | `NoAutoUpdate` | `[OK]` if not set. `[!!]` if `= 1` (updates disabled). |
+| Windows Update Access | `DisableWindowsUpdateAccess` | `[OK]` if not blocked. `[!!]` if `= 1` (HRESULT 0x8024002E). |
+| Internet Locations | `DoNotConnectToWindowsUpdateInternetLocations` | `[OK]` if not set. `[i]` if locked to WSUS (expected). `[!!]` if locked to WSUS but no WSUS configured. |
+| Auto-Update Behavior | `AUOptions` (1-5) | `[OK]` for value 4 (fully automated). `[i]` for values 2-3, 5. `[!]` for value 1 (disabled). |
+| Feature Deferral | `DeferFeatureUpdatesPeriodInDays` | `[i]` with value. `[!]` if > 180 days. |
+| Quality Deferral | `DeferQualityUpdatesPeriodInDays` | `[i]` with value. `[!]` if > 14 days (missing 2+ Patch Tuesdays). |
+| Pause Deferrals | `PauseDeferrals` | `[!]` if `= 1`. |
+| Quality Pause | `PauseQualityUpdatesStartTime` | `[!!]` if set -- security patches paused. |
+| Feature Pause | `PauseFeatureUpdatesStartTime` | `[!]` if set. |
+| Driver Exclusion | `ExcludeWUDriversInQualityUpdate` | `[i]` if `= 1` -- drivers excluded from quality updates. |
+| WSUS Target Group | `TargetGroupEnabled`, `TargetGroup` | `[i]` with group name. `[!]` if targeting enabled but no group set. |
+
+**User & UX Settings** (`HKLM:\SOFTWARE\Microsoft\WindowsUpdate\UX\Settings`):
+
+| Check | Registry Key | Verdicts |
+|-------|-------------|----------|
+| Active Hours | `ActiveHoursStart`, `ActiveHoursEnd` | `[OK]` if default. `[i]` with window. `[!]` if span > 18h. |
+| User-Initiated Pause | `PauseUpdatesExpiryTime` | `[OK]` if not set or expired. `[!!]` if pause is active (expiry in the future). |
+
+**MDM/Intune Policy Layer** (`HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Update`):
+
+| Check | Registry Key | Verdicts |
+|-------|-------------|----------|
+| AllowAutoUpdate | `AllowAutoUpdate` (0-5) | `[!!]` if 5 (updates off). `[!]` if 0 (notify only). `[i]` for 1-4. |
+| Feature Deferral | `DeferFeatureUpdatesPeriodInDays` | Same thresholds as GPO. |
+| Quality Deferral | `DeferQualityUpdatesPeriodInDays` | Same thresholds as GPO. |
+| Quality Pause | `PauseQualityUpdatesStartTime` | `[!!]` if set. |
+| Feature Pause | `PauseFeatureUpdatesStartTime` | `[!]` if set. |
+| Driver Exclusion | `ExcludeWUDriversInQualityUpdate` | `[i]` if `= 1`. |
+| Target Product Version | `ProductVersion` | `[i]` -- device pinned to this OS version. |
+
+**Delivery Optimization** (`HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization`):
+
+| Check | Registry Key | Verdicts |
+|-------|-------------|----------|
+| Download Mode | `DODownloadMode` | `[OK]` for modes 1-2 (LAN/Group peering). `[i]` for 0 or 3. `[!]` for 99 or 100 (peering disabled). |
+
+**Policy Conflict Resolution** (Split-Brain Detection):
+
+When both GPO and MDM keys are present, the script checks `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\ControlPolicyConflict\MDMWinsOverGP`:
+
+| Condition | Verdict |
+|-----------|---------|
+| `MDMWinsOverGP = 1` | `[!]` MDM wins. GPO settings are being overridden for Policy CSP settings. |
+| `MDMWinsOverGP` not set or `= 0` | `[!!]` Race condition. No guaranteed policy winner. Unpredictable update behavior. |
+| Only GPO or only MDM keys present | No conflict finding shown. |
+
+#### Output Structure
+
+The output is organized into clearly labeled sections so techs can quickly identify which policy layer is causing the problem:
+
+```
+=== WU Policy & Configuration Audit ===
+
+--- GPO Policy Layer ---
+[OK]  WSUS Server
+       Not configured. Client uses Microsoft Update or MDM for updates.
+[OK]  Automatic Updates (GPO)
+       NoAutoUpdate is not set. Automatic updates are enabled.
+[OK]  Windows Update Access (GPO)
+       Access to Windows Update is not blocked by policy.
+[OK]  Internet Locations (GPO)
+       Client can reach Microsoft Update if WSUS is unavailable.
+[OK]  Auto-Update Behavior (GPO)
+       Not configured by policy. Default OS behavior applies.
+[OK]  Deferral & Pause Settings (GPO)
+       No deferral or pause policies configured at the GPO layer.
+
+--- User & UX Settings ---
+[OK]  Active Hours
+       Not configured. Default active hours apply (8 AM - 5 PM).
+[OK]  User-Initiated Pause
+       No user-initiated pause is active.
+
+--- MDM/Intune Policy Layer ---
+[i]   MDM Update Policy
+       No MDM update policies detected. Device is not managed by Intune/MDM for Windows Update.
+
+--- Delivery Optimization ---
+[OK]  Delivery Optimization
+       Not configured by policy. Default mode applies (LAN peering).
+
+RESULT: No issues detected. Windows Update policies appear correctly configured.
+
+NEXT:   If WSUS unreachable           -> verify WSUS server health or escalate to infrastructure team
+        If policies block updates     -> review GPO/Intune policies with the sysadmin
+        If GPO/MDM split-brain        -> decide on a single policy source and set MDMWinsOverGP accordingly
+        If user paused updates        -> unpause via Settings > Windows Update
+        For network-level issues      -> run WU003 WUNetworkCheck
+        For deeper WU investigation   -> run scripts WU003-WU008 in order
+```
+
+#### Boundary with Other Scriptlets
+
+| Scriptlet | What it handles (NOT WU002's job) |
+|-----------|-----------------------------------|
+| WU001 WUQuickHealth | Services, disk space, reboot flags, WU history, cache size |
+| WU003 WUNetworkCheck | DNS resolution, HTTPS connectivity, proxy, VPN, metered connections |
+| WU004 WUTlsCertCheck | TLS 1.2 Schannel, .NET crypto, clock drift, root certificates |
+| WU005 WUComponentHealth | DISM health, CBS.log, SFC, component store |
+
+WU002 does a basic TCP reachability test for the WSUS server URL (if configured). This is NOT a full network diagnostic -- it is a quick "is the configured server alive?" check. Full DNS/HTTPS/proxy diagnostics belong to WU003.
+
+#### Changelog
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial release. 11 checks across 3 registry layers. WSUS TCP reachability (3s timeout). ExcludeWUDriversInQualityUpdate from both GPO and MDM. MDMWinsOverGP split-brain detection at ControlPolicyConflict registry path. Sectioned output (GPO, UX, MDM, DO, Conflict Resolution). |
+
+---
+
 ## Defender & AV Suite
 
 ### DEF001 -- DEFStatusTriage
