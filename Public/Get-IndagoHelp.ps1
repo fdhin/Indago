@@ -123,5 +123,5 @@ function Show-TaskHelp {
     }
 
     # Output as a single block of text
-    $helpLines | ForEach-Object { Write-Host $_ }
+    $helpLines | ForEach-Object { Write-Output $_ }
 }
