@@ -443,6 +443,17 @@ namespace RunAsUser
                                         int dwRead = 0;
                                         while (true)
                                         {
+                                            uint bytesRead = 0;
+                                            uint bytesAvail = 0;
+                                            uint bytesLeft = 0;
+                                            bool bPeek = NativeMethods.PeekNamedPipe(pipeHandle, null, 0, ref bytesRead, ref bytesAvail, ref bytesLeft);
+                                            if (!bPeek)
+                                                break;
+                                            if (bytesAvail == 0)
+                                            {
+                                                Thread.Sleep(50);
+                                                continue;
+                                            }
                                             bool bSuccess = NativeMethods.ReadFile(pipeHandle, buf, BUFSIZE, ref dwRead, IntPtr.Zero);
                                             if (!bSuccess || dwRead == 0)
                                                 break;
