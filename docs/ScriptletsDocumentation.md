@@ -537,6 +537,173 @@ DEF001 is deliberately scoped to fast vital signs. The following concerns are ha
 
 ---
 
+### DEF002 -- DEFDefinitionHealth
+
+**Version:** 1.0
+**Category:** DefenderEndpoint
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Diagnoses **why** Defender definitions are stale. DEF001 tells the tech "definitions are X days old." DEF002 answers the follow-up: is the update source misconfigured, is the CDN unreachable, is the scheduled task broken, or is policy blocking updates?
+
+In managed environments, stale definitions are the #1 compliance failure. The cause is almost never "Defender is broken" -- it's a WSUS server that doesn't approve Defender defs, a GPO that omits the Microsoft CDN from the fallback order, or a scheduled task that vanished after an in-place upgrade.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name DEFDefinitionHealth
+```
+
+No parameters. The script reads all relevant sources automatically.
+
+#### What It Checks
+
+**Check 1: Definition Age Analysis**
+
+Reports all three signature types with **hourly** precision (DEF001 only reports days):
+
+| Signature Type | CIM Properties Used | Thresholds |
+|---|---|---|
+| Antivirus | `AntivirusSignatureLastUpdated`, `AntivirusSignatureAge` | `[OK]` <= 24h, `[!]` 24-48h, `[!!]` > 48h |
+| Antispyware | `AntispywareSignatureLastUpdated`, `AntispywareSignatureAge` | Same |
+| NIS (Network Inspection) | `NISSignatureLastUpdated`, `NISSignatureAge` | Same |
+
+Special cases:
+- **65535 sentinel**: If signature age = 65535, definitions have **never** been updated since OS install. Reported as `[!!] NEVER UPDATED`.
+- **Server 2022 WMI blank**: If `Get-MpComputerStatus` returns null, WMI provider may be unregistered. Reported with remediation guidance.
+
+**Check 2: Update Source Configuration**
+
+Registry path: `HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Signature Updates`
+
+| Registry Value | What We Report |
+|---|---|
+| `FallbackOrder` | Decoded priority list (WSUS -> Microsoft Update -> MMPC -> FileShares). `[!]` if WSUS-only with no Microsoft CDN fallback. |
+| `DefinitionUpdateFileSharesSources` | UNC paths if `FileShares` is in fallback order. |
+| `ForceUpdateFromMU` | Whether Microsoft Update fallback is explicitly allowed (1) or blocked (0). |
+| `SignatureUpdateInterval` | Polling frequency in hours. `[!!]` if set to 0 (polling completely disabled). |
+| `SignatureUpdateCatchupInterval` | Days before catch-up triggers after missed updates. |
+| `DisableScheduledSignatureUpdateOnBattery` | `[!]` if set to 1 -- laptops may fall out of compliance on battery. |
+
+Additional check: `SetPolicyDrivenUpdateSourceForOtherUpdates` at the WindowsUpdate policy path. If set to 1 by Co-Management, this hijacks Defender updates away from WSUS to cloud -- flagged as `[!]` with explanation.
+
+**Check 3: Update Source Connectivity**
+
+TCP 443 reachability test (3-second timeout) to Microsoft CDN endpoints:
+
+| Endpoint | Purpose | Verdict if Unreachable |
+|---|---|---|
+| `definitionupdates.microsoft.com` | Primary CDN for Security Intelligence updates | `[!!]` -- definitions cannot update |
+| `go.microsoft.com` | Alternate Download Location for cumulative catch-up updates | `[!]` -- catch-up updates will fail |
+
+WSUS reachability is **not** duplicated here (WU002 handles it). If WSUS is in the fallback order, an informational note directs the tech to WU002.
+
+**Check 4: Recent Update Failure Events (last 48h)**
+
+Event log: `Microsoft-Windows-Windows Defender/Operational`
+
+| Event ID | Meaning | Handling |
+|---|---|---|
+| 2000 | Signature update succeeded | Count in window. If none and definitions stale, pipeline is broken. |
+| 2001 | Signature update **failed** | `[!!]` with HRESULT translation. Most recent failure shown. |
+| 2003 | Engine update failed | `[!!]` -- engine updates are distinct from sig updates. |
+
+HRESULT translation table (9 codes):
+
+| HRESULT | Translation |
+|---|---|
+| `0x8024002E` | WU_E_WU_DISABLED -- Windows Update service disabled or access blocked |
+| `0x8024402C` | DNS failure for update server |
+| `0x80072EE7` | DNS failure for Microsoft CDN endpoints |
+| `0x80072EFD` | Connection timed out to update server |
+| `0x80240022` | Signature payload corrupted in transit |
+| `0x8050800C` | Downloaded definitions incompatible with engine version |
+| `0x80508020` | Internal engine config error, needs service restart |
+| `0x800106BA` | RPC server unavailable -- Defender service crashed or MpCmdRun.exe missing |
+| `0x80070643` | MSI/extraction failure during signature injection |
+
+**Check 5: Scheduled Task Health**
+
+Tasks under `\Microsoft\Windows\Windows Defender\`:
+
+| Task Name | What It Does |
+|---|---|
+| `Windows Defender Scheduled Scan` | Evaluates catch-up and downloads definitions before scanning |
+| `Windows Defender Cache Maintenance` | Purges stale definition delta files |
+| `Windows Defender Cleanup` | Removes legacy definition files to prevent disk bloat |
+| `Windows Defender Verification` | Periodic verification of Defender component integrity |
+
+For each task: exists? enabled? last run result? Traps `0x2` (ERROR_FILE_NOT_FOUND) specifically -- this means MpCmdRun.exe is missing or the task XML path is corrupt.
+
+#### Output Structure
+
+```
+=== Defender Definition & Signature Health ===
+
+--- Definition Age ---
+[OK]  Antivirus Signatures
+       4.2 hours old (last updated: 2026-04-02 19:15 UTC). Definitions are current.
+[OK]  Antispyware Signatures
+       4.2 hours old (last updated: 2026-04-02 19:15 UTC). Current.
+[OK]  NIS (Network Inspection) Signatures
+       4.2 hours old (last updated: 2026-04-02 19:15 UTC). Current.
+
+--- Update Source Configuration ---
+[OK]  Signature Update Source (GPO)
+       FallbackOrder: WSUS/SCCM -> Microsoft Update -> Microsoft Malware Protection Center (ADL).
+       Microsoft CDN is included as a fallback. Update path has redundancy.
+[i]   Update Schedule: Update check every 4 hour(s). catch-up after 1 day(s) of missed updates.
+
+--- Update Source Connectivity ---
+[OK]  definitionupdates.microsoft.com:443 -- Reachable.
+       Primary CDN for Security Intelligence updates.
+[OK]  go.microsoft.com:443 -- Reachable.
+       Alternate Download Location (ADL) for cumulative catch-up updates.
+
+--- Recent Update Events (last 48h) ---
+[OK]  No signature update failures in the last 48 hours.
+[i]   Last successful update: 2026-04-02 19:15 (Event 2000).
+
+--- Scheduled Tasks ---
+[OK]  Windows Defender Scheduled Scan
+       Enabled. Last result: 0 (success).
+[OK]  Windows Defender Cache Maintenance
+       Enabled. Last result: 0 (success).
+[OK]  Windows Defender Cleanup
+       Enabled. Last result: 0 (success).
+[OK]  Windows Defender Verification
+       Enabled. Last result: 0 (success).
+
+RESULT: No issues detected. Definition update pipeline is healthy.
+
+NEXT:   If update source unreachable      -> check network/proxy (see WU003 WUNetworkCheck)
+        If WSUS blocking definitions      -> approve Defender definitions on WSUS or add MMPC fallback
+        If scheduled tasks missing         -> run DEF008 DEFRemediation to recreate
+        If connectivity OK but still fail  -> run DEF006 DEFPlatformVersion (platform may be too old)
+        If running WSUS                    -> run WU002 WUPolicyAudit to verify WSUS reachability
+```
+
+#### Boundary with Other Scriptlets
+
+| Scriptlet | What it handles (NOT DEF002's job) |
+|---|---|
+| DEF001 DEFStatusTriage | AV running mode, Security Center bitmask, services, scan history, tamper protection, signal gap analysis |
+| DEF003 DEFThirdPartyAV | Third-party AV conflicts, ghost registrations, remnant scan, passive mode analysis |
+| DEF004 DEFRealtimeProtection | RTP state, tamper protection diagnostics, exclusions, ASR rules |
+| DEF005 DEFPolicyConflict | Full GPO vs MDM policy audit for Defender settings |
+| DEF006 DEFPlatformVersion | Platform/engine version freshness, update path analysis |
+| DEF007 DEFEventAnalysis | Full event timeline, threat history, comprehensive error code analysis |
+
+#### Changelog
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial release. 5 check groups: definition age with hourly precision (AV, Antispyware, NIS), update source configuration (GPO FallbackOrder, polling interval, battery policy, Co-Management sabotage), CDN connectivity (definitionupdates.microsoft.com, go.microsoft.com with 3s TCP timeout), recent update failure events (48h window, 9-code HRESULT table), scheduled task health (4 tasks, existence/state/last result). |
+
+---
+
 ## BitLocker Suite
 
 ### BL001 -- BLStatusSnapshot
