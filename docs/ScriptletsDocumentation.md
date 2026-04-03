@@ -1275,3 +1275,174 @@ FW001 is deliberately scoped to fast triage. The following concerns are handled 
 | Version | Changes |
 |---------|---------|
 | 1.0 | Initial build. Firewall profile status via `Get-NetFirewallProfile` with active adapter correlation via `Get-NetConnectionProfile`. Security Center `FirewallProduct` cross-reference with `productState` bitmask decoding, ghost detection (exe path validation), and desync detection (Security Center vs profile state). MpsSvc always-Automatic service check (different pattern from demand-start services). Active network adapter inventory with profile binding. Default action deviation flags (Inbound=Allow, Outbound=Block). `NEXT:` footer routing to FW002/FW003/FW006. |
+
+---
+
+### FW002 -- FWPolicyConflict
+
+**Version:** 1.0
+**Category:** Firewall
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Answers the question "a firewall profile is disabled -- **WHO disabled it, and WHY?**"
+
+FW001 detects that a profile is disabled. FW002 reads firewall configuration from **all three independent policy sources** (Local, GPO, MDM) and displays them side-by-side, making invisible policy conflicts immediately visible.
+
+The **#1 real-world root cause** of "Intune says firewall is non-compliant" is a stale domain GPO that sets `EnableFirewall = 0` on the Domain profile. This was standard practice 10+ years ago in on-prem environments. When the machine is migrated to Entra ID join, the GPO values are **tattooed** into the `SOFTWARE\Policies` registry hive. GPO overrides MDM by default. The firewall stays disabled. The tech has no idea why. FW002 makes this invisible chain visible and explains it.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name FWPolicyConflict
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- Side-by-Side Policy Comparison
+
+For each profile (Domain, Private, Public), reads `EnableFirewall` from 3 independent registry sources:
+
+| Source | Registry Path | Profile Subkeys |
+|--------|--------------|-----------------|
+| **Local** | `HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy` | `DomainProfile`, `StandardProfile` (=Private), `PublicProfile` |
+| **GPO** | `HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall` | `DomainProfile`, `PrivateProfile`, `PublicProfile` |
+| **MDM** | `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Firewall` | `EnableFirewall_Domain`, `EnableFirewall_Private`, `EnableFirewall_Public` |
+
+Note: Local registry uses `StandardProfile` for Private (historical naming from pre-Vista Windows). GPO uses `PrivateProfile`. MDM uses flat value names with a profile suffix.
+
+`EnableFirewall` values: `1` = Enabled, `0` = Disabled. Absent = system default (Enabled).
+
+**Verdict logic:**
+
+| Condition | Verdict | Meaning |
+|-----------|---------|---------|
+| All sources agree, all enabled | `[OK]` | No conflict |
+| All sources agree, all disabled | `[!!]` | Intentional but firewall is off |
+| Sources disagree | `[!!]` | Policy conflict detected |
+
+**Special scenario (user-requested callout):** When GPO disables a profile while MDM wants it enabled and `MDMWinsOverGP` is not active, the output explicitly explains:
+- GPO is overriding MDM
+- The firewall stays disabled despite Intune policy
+- Intune reports non-compliant but the GPO silently wins
+- How to fix it (set MDMWinsOverGP=1 or remove the GPO)
+
+##### Check 2 -- EnableFirewall=0 Summary
+
+A focused summary that flags **every** instance of `EnableFirewall = 0` from any source. Provides quick scan for the tech after the detailed side-by-side.
+
+Special callout for GPO `EnableFirewall = 0` on Domain profile -- the #1 legacy artifact, with guidance about Zero Trust incompatibility and tattooing on non-domain-joined machines.
+
+##### Check 3 -- MDMWinsOverGP Conflict Resolution
+
+Source: `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\ControlPolicyConflict`
+
+| Value | Meaning |
+|-------|---------|
+| `MDMWinsOverGP = 1` | MDM takes precedence over GPO |
+| `MDMWinsOverGP = 0` or absent | GPO wins by default |
+
+Also validates **confirmation keys** (`MDMWinsOverGP_ProviderSet`, `MDMWinsOverGP_WinningProvider`). If `MDMWinsOverGP = 1` but confirmation keys are absent, the setting is staged but not yet active (reboot needed).
+
+| Condition | Verdict |
+|-----------|---------|
+| `MDMWinsOverGP = 1` + confirmation keys present | `[OK]` -- MDM wins, GPO ignored |
+| `MDMWinsOverGP = 1` + no confirmation keys | `[!]` -- Staged but not active, reboot needed |
+| `MDMWinsOverGP = 0` or absent + GPO keys exist | `[!]` -- GPO wins, MDM may be silently overridden |
+| `MDMWinsOverGP = 0` or absent + no GPO keys | `[i]` -- No conflict to resolve |
+
+##### Check 4 -- Orphaned GPO Detection
+
+Detects the "tattooed GPO" scenario: GPO registry keys are present but the machine is no longer domain-joined.
+
+Detection logic:
+1. Check if GPO keys exist at `HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall`
+2. Check domain join status via `Get-CimInstance Win32_ComputerSystem` (`PartOfDomain`)
+3. GPO keys present + not domain-joined = **orphaned GPO**
+
+| Condition | Verdict |
+|-----------|---------|
+| GPO keys present + domain-joined | `[i]` -- Keys expected, verify with GPO owner |
+| GPO keys present + NOT domain-joined | `[!!]` -- Orphaned GPO, tattooed remnants |
+| No GPO keys | `[OK]` -- No risk |
+
+#### Example Output (GPO Conflict with Explanation)
+
+```
+=== Firewall Policy Source & Conflict Detection ===
+
+--- Domain Profile: Policy Sources ---
+[!!]  Domain Profile -- Policy CONFLICT
+       Local:  EnableFirewall = 1 (Enabled)
+       GPO:    EnableFirewall = 0 (DISABLED)
+       MDM:    EnableFirewall = 1 (Enabled)
+
+       ROOT CAUSE: GPO is explicitly disabling this profile.
+       MDMWinsOverGP is NOT set to 1, so GPO takes precedence over MDM.
+       RESULT: The firewall stays DISABLED despite Intune wanting it enabled.
+       Intune reports non-compliant, but the GPO silently overrides the MDM policy.
+       FIX: Set MDMWinsOverGP=1 via Intune policy, or remove the GPO.
+
+--- Private Profile: Policy Sources ---
+[OK]  Private Profile -- No Conflict
+       Local:  EnableFirewall = 1 (Enabled)
+       GPO:    Not configured
+       MDM:    Not configured
+
+--- Public Profile: Policy Sources ---
+[OK]  Public Profile -- No Conflict
+       Local:  EnableFirewall = 1 (Enabled)
+       GPO:    Not configured
+       MDM:    Not configured
+
+--- EnableFirewall=0 Summary ---
+[!!]  GPO disables Domain Profile (HKLM:\...\DomainProfile\EnableFirewall = 0)
+       Legacy GPO artifact detected. This GPO disables the firewall when the machine
+       connects to the corporate network. Incompatible with modern Zero Trust.
+       This machine is NOT domain-joined. The GPO key is a tattooed remnant.
+
+--- MDMWinsOverGP ---
+[!]   MDMWinsOverGP Not Configured (GPO Wins by Default)
+       MDMWinsOverGP is not set. In hybrid environments, GPO takes precedence by default.
+       GPO firewall registry keys ARE present on this machine.
+       If Intune should control the firewall, deploy MDMWinsOverGP=1 via Intune.
+
+--- Orphaned GPO Check ---
+[!!]  ORPHANED GPO Detected
+       Machine is NOT domain-joined, but GPO firewall registry keys are present.
+       These are tattooed remnants from a previous domain membership.
+       Options:
+         1. Remove the GPO registry keys manually
+         2. Set MDMWinsOverGP=1 via Intune to force MDM precedence
+
+RESULT: 3 issue(s) and 1 warning(s) found. Policy conflicts need attention.
+
+NEXT:   If GPO is intentionally disabling firewall -> escalate to GPO owner, do NOT override
+        If stale GPO -> remove the registry keys or set MDMWinsOverGP=1
+        If MDM policy missing -> check Intune policy assignment and force sync
+        If no conflicts -> run FW003 FWThirdParty to check for third-party interference
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---------|------------|
+| Firewall profile live state (enabled/disabled via `Get-NetFirewallProfile`) | FW001 FWStatusTriage |
+| Active adapter correlation | FW001 |
+| Security Center cross-reference | FW001 |
+| MpsSvc service health | FW001 |
+| Third-party firewall detection (SecurityCenter2, Uninstall keys) | FW003 FWThirdParty |
+| WFP callout driver enumeration | FW003 |
+| BFE/RpcSs dependency chain, WFP state, log analysis | FW004 FWServiceHealth |
+| Rule count, duplicates, bloat | FW005 FWRuleDiagnostic |
+| Profile re-enable, service restart, GPO cleanup | FW006 FWRemediation |
+
+#### Version History
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial build. 4 check groups: side-by-side policy comparison from 3 sources (Local/GPO/MDM) per profile, EnableFirewall=0 detection with legacy GPO callout, MDMWinsOverGP conflict resolution with ProviderSet/WinningProvider confirmation key validation, orphaned GPO detection via `Win32_ComputerSystem.PartOfDomain`. Explicit root-cause explanation when GPO overrides MDM due to missing MDMWinsOverGP. `NEXT:` footer routing to FW003/FW006. |
