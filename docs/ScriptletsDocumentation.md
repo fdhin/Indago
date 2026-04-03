@@ -909,6 +909,162 @@ BL001 is deliberately scoped to fast triage. The following concerns are handled 
 
 ---
 
+### BL002 -- BLTpmHealth
+
+**Version:** 1.0
+**Category:** BitLocker
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Diagnoses **why** BitLocker can't encrypt -- is the TPM the blocker? BL001 tells the tech "this volume is not encrypted." BL002 drills into the TPM hardware that BitLocker depends on: is it present, correctly provisioned, running vulnerable firmware, or locked out?
+
+The TPM is the single most common BitLocker blocker in managed environments. Failure modes include: TPM disabled in BIOS, not provisioned/owned, TPM 1.2 when Intune requires 2.0, known firmware vulnerabilities (Infineon ROCA, STMicro TPM-FAIL), and dictionary attack lockout.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name BLTpmHealth
+```
+
+No parameters. The script reads all relevant sources automatically.
+
+#### What It Checks
+
+**Check 1: TPM Presence & State**
+
+Primary source: `Get-Tpm` cmdlet (PS 5.1+, `TrustedPlatformModule` module).
+
+| Property | What We Check | Verdict |
+|---|---|---|
+| `TpmPresent` | Is TPM hardware detected by the OS? | `[!!]` if `False` -- BIOS check needed |
+| `TpmReady` | Aggregate Windows readiness flag | `[OK]` if `True`; `[!!]` if `False` |
+| `TpmEnabled` | Is the TPM enabled? | `[!!]` if not enabled |
+| `TpmActivated` | Is the TPM activated for crypto? | `[!!]` if not activated |
+| `TpmOwned` | Has Windows taken ownership? | `[!]` if not owned, checks `AutoProvisioning` |
+
+**Early exit:** If `TpmPresent` is `False`, reports `[!!]` with BIOS guidance and skips remaining checks.
+
+**Fallback:** If `Get-Tpm` fails entirely (module missing), falls back to `tpmtool.exe getdeviceinformation` and parses stdout for basic diagnostics (presence, version, manufacturer, lockout, initialization). If both fail, reports `[!!]` "TPM infrastructure unavailable."
+
+**Check 2: TPM Version**
+
+Source: `Get-CimInstance -Namespace 'ROOT\CIMv2\Security\MicrosoftTpm' -ClassName Win32_Tpm`
+
+| Property | What We Report |
+|---|---|
+| `SpecVersion` | Parsed for major version (1.2 vs 2.0). `[OK]` for 2.0, `[!]` for 1.2 with guidance. |
+| `PhysicalPresenceVersionInfo` | PPI version (informational) |
+
+Note: `Get-Tpm` does not cleanly expose 1.2 vs 2.0 -- the `Win32_Tpm` WMI class is required for accurate version detection.
+
+**Check 3: Manufacturer & Firmware Vulnerability Check**
+
+Source: `Get-Tpm` (`ManufacturerIdTxt`, `ManufacturerVersion`, `ManufacturerVersionFull20`)
+
+| Manufacturer | CVE | Affected Firmware | Safe Firmware | Severity |
+|---|---|---|---|---|
+| Infineon (`IFX`) | CVE-2017-15361 (ROCA) | TPM 1.2 fw < 4.34/6.43; TPM 2.0 fw < 7.63 | >= 7.63.x | `[!!]` -- RSA key compromise |
+| STMicro (`STM`) | CVE-2019-16863 (TPM-FAIL) | Branches 71.x < 71.16, 73.x < 73.20, 74.x < 74.20 | 71.16, 73.20, 74.20 | `[!!]` -- ECDSA key extraction |
+
+All findings include explicit guidance to visit the OEM's support site for a firmware update. The script cannot fix BIOS-level TPM issues.
+
+**Check 4: Lockout State**
+
+Source: `Get-Tpm` lockout properties
+
+| Property | What We Report |
+|---|---|
+| `LockedOut` | Boolean -- is the TPM refusing auth commands? |
+| `LockoutCount` | Current tally of failed authorizations |
+| `LockoutMax` | Threshold before hard lockout (typically 32 for TPM 2.0) |
+| `LockoutHealTime` | Duration for count to decrement by 1 |
+
+If locked out, calculates estimated heal duration: `LockoutCount * LockoutHealTime` of **continuous powered-on time**. Explicitly states that shutdowns, hibernation, and deep sleep pause the timer. No exact unlock time can be predicted. No native method exists to clear the lockout programmatically (modern Windows discards the owner auth password).
+
+**Check 5: Attestation & Provisioning Readiness**
+
+| Check | Source | Verdict |
+|---|---|---|
+| TBS (TPM Base Services) | `Get-Service 'TBS'` | `[OK]` running; `[!!]` stopped/disabled/missing |
+| Auto-Provisioning | `Get-Tpm` `AutoProvisioning` property | Reported if `TpmOwned = False` |
+| Owner Auth Retention | `HKLM:\SOFTWARE\Policies\Microsoft\TPM\OSManagedAuthLevel` | `[i]` informational with meaning |
+
+OSManagedAuthLevel values:
+
+| Value | Meaning |
+|---|---|
+| 0 (None) | OS stores no owner auth -- no programmatic TPM clear |
+| 2 (Delegated) | Partial programmatic control |
+| 4 (Full) | Full programmatic TPM management available |
+| 5 (Default) | Modern default -- retains lockout auth only |
+
+#### Output Structure
+
+```
+=== TPM Health & Readiness ===
+
+--- TPM Presence & State ---
+[OK]  TPM Present
+       TpmPresent: True. The operating system detects the TPM hardware.
+[OK]  TPM Ready
+       TpmReady: True. TPM is fully compliant with Windows standards.
+[OK]  TPM Enabled & Activated
+       TpmEnabled: True. TpmActivated: True.
+[OK]  TPM Ownership
+       TpmOwned: True. Windows has taken ownership of the TPM.
+
+--- TPM Version ---
+[OK]  TPM Specification Version
+       Version: 2.0 (SpecVersion: 2.0, 0, 1.16). Meets modern Intune requirements.
+[i]   Physical Presence Interface: 1.3
+
+--- TPM Manufacturer & Firmware ---
+[i]   Manufacturer: INTC (Intel). Firmware: 500.8.0.0
+       No known firmware vulnerabilities for this manufacturer/version combination.
+
+--- Lockout State ---
+[OK]  TPM Lockout
+       Not locked out. LockoutCount: 0 of 32 max. No dictionary attack activity.
+
+--- Attestation & Provisioning ---
+[OK]  TPM Base Services (TBS)
+       Service is running. TPM stack is operational.
+[OK]  Auto-Provisioning
+       TPM is owned. Provisioning was successful.
+[i]   Owner Auth Retention
+       OSManagedAuthLevel: 5. Default (modern) -- Retains lockout auth, discards full owner.
+       A TPM clear requires physical presence (reboot + BIOS key press).
+
+RESULT: No issues detected. TPM is healthy and ready for BitLocker.
+
+NEXT:   If TPM not present         -> check BIOS settings (often disabled by default)
+        If TPM 1.2                 -> may need hardware upgrade or BIOS setting to enable 2.0 mode
+        If firmware flagged        -> visit OEM support site for TPM firmware update
+        If TPM locked out          -> wait for lockout to expire, then retry
+        If TPM ready               -> run BL003 BLHardwarePrereqs to check other prerequisites
+```
+
+#### Boundary with Other Scriptlets
+
+| Scriptlet | What it handles (NOT BL002's job) |
+|---|---|
+| BL001 BLStatusSnapshot | Volume encryption status, key protectors, lock state, OS drive letter, last BitLocker event |
+| BL003 BLHardwarePrereqs | UEFI vs Legacy BIOS, Secure Boot, GPT vs MBR, system partition, Modern Standby |
+| BL004 BLIntunePolicy | MDM enrollment, BitLocker CSP settings, policy-hardware comparison |
+| BL005 BLEscrowCheck | Recovery key escrow to AAD, device registration, escrow endpoint connectivity |
+| BL006 BLPolicyConflict | GPO vs MDM BitLocker policy conflicts |
+| BL007 BLEventAnalysis | Full BitLocker event log timeline and error code analysis |
+
+#### Changelog
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial release. 5 check groups: TPM presence/state (Get-Tpm with tpmtool.exe fallback), TPM version (Win32_Tpm WMI SpecVersion for 1.2 vs 2.0), manufacturer firmware vulnerability scanning (Infineon ROCA CVE-2017-15361, STMicro TPM-FAIL CVE-2019-16863 with version-range matching), lockout state with heal time calculation, attestation/provisioning readiness (TBS service, auto-provisioning, owner auth retention). Early exit when TPM not present. |
+
+---
+
 ## Firewall Suite
 
 ### FW001 -- FWStatusTriage
