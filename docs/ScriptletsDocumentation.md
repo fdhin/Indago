@@ -900,6 +900,202 @@ NEXT:   If update source unreachable      -> check network/proxy (see WU003 WUNe
 
 ---
 
+### DEF003 -- DEFThirdPartyAV
+
+**Version:** 1.0
+**Category:** DefenderEndpoint
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Determines which AV product is actually primary, whether coexistence is working correctly, and whether remnants of uninstalled AV products are causing ghost states. This is the scriptlet that generates the **most confusion in the field** -- a third-party AV was uninstalled but its Security Center registration persists, forcing Defender into passive mode while nobody is actually protecting the machine.
+
+DEF001 detects "Defender is passive" or "ghost detected." DEF003 tells the tech **exactly which product, which GUID, which remnants, and what to do next**.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name DEFThirdPartyAV
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- Security Center Deep Enumeration
+
+Queries `ROOT\SecurityCenter2\AntiVirusProduct` via `Get-CimInstance` and reports **every** registered product with full detail.
+
+For each product, the script reports:
+
+| Field | Source | What It Shows |
+|-------|--------|---------------|
+| Display Name | `displayName` | Product name |
+| Instance GUID | `instanceGuid` | For DEF008 remediation targeting |
+| Product State | `productState` bitmask decoded | Engine On/Off/Snoozed/Expired, Signatures Current/Outdated, Origin MS/Third-party |
+| Product Exe | `pathToSignedProductExe` | Full path + `Test-Path` result |
+| Reporting Exe | `pathToSignedReportingExe` | Full path + `Test-Path` result |
+
+**Verdicts:**
+
+| Condition | Verdict |
+|-----------|---------|
+| Defender On | `[OK]` |
+| Defender Off/Snoozed/Expired | `[!]` |
+| Third-party registered, engine On, exe exists | `[i]` (expected) |
+| Third-party registered, exe MISSING | `[!!]` Ghost registration |
+| Third-party registered, engine Off/Snoozed/Expired | `[!]` Not protecting |
+
+**Windows Server:** `SecurityCenter2` namespace unavailable. Reports `[i]` and skips to remaining checks.
+
+##### Check 2 -- AV Remnant Scan
+
+Scans for leftover artifacts from 10 major vendors across three categories. Only flags items where the vendor is NOT registered in Security Center (if registered and active, the artifact is expected).
+
+**2a: Registry Remnants**
+
+| Vendor | Registry Path |
+|--------|---------------|
+| Norton / Symantec | `HKLM:\SOFTWARE\Symantec` |
+| McAfee / Trellix | `HKLM:\SOFTWARE\McAfee` |
+| Kaspersky | `HKLM:\SOFTWARE\KasperskyLab` |
+| ESET | `HKLM:\SOFTWARE\ESET` |
+| Sophos | `HKLM:\SOFTWARE\Sophos` |
+| Trend Micro | `HKLM:\SOFTWARE\TrendMicro`, `WOW6432Node\TrendMicro` |
+| Avast / AVG | `HKLM:\SOFTWARE\AVAST Software`, `HKLM:\SOFTWARE\AVG` |
+| Bitdefender | `HKLM:\SOFTWARE\Bitdefender` |
+| Webroot | `HKLM:\SOFTWARE\WRData` |
+| Malwarebytes | `HKLM:\SOFTWARE\Malwarebytes` |
+
+Verdict: `[!]` if vendor not in Security Center but registry key exists.
+
+**2b: Leftover Services**
+
+Checks for services from known AV vendors using wildcard patterns (e.g. `McAfee*`, `Norton*`, `Sophos*`). For each service found where the vendor is not in Security Center:
+
+| Condition | Verdict |
+|-----------|---------|
+| Service Disabled | `[!]` Leftover from uninstall |
+| Service Auto start but Stopped | `[!!]` Orphaned, trying to start and failing |
+| Service Running | `[!]` Running but not registered, investigate |
+
+**2c: Leftover Filter Drivers**
+
+Checks `C:\Windows\System32\drivers\` for known vendor kernel driver files:
+
+| Vendor | Driver Files |
+|--------|-------------|
+| McAfee / Trellix | `mfehidk.sys`, `mfefirek.sys`, `mfencbdc.sys` |
+| ESET | `ehdrv.sys`, `epfwwfp.sys` |
+| Kaspersky | `klif.sys`, `klhk.sys`, `klboot.sys` |
+| Sophos | `savonaccess.sys`, `SophosED.sys` |
+| Trend Micro | `tmwfp.sys`, `TmXPflt.sys` |
+| Avast / AVG | `aswSP.sys`, `avgmfx64.sys`, `aswids.sys` |
+| Bitdefender | `trufos.sys`, `bdsandbox.sys` |
+| Webroot | `WRkrn.sys` |
+| Malwarebytes | `mbam.sys`, `MBAMSwissArmy.sys`, `farflt.sys` |
+| Norton / Symantec | `n360drv.sys`, `srtsp64.sys` |
+
+Verdict: `[!]` -- "Leftover filter driver. May cause I/O conflicts or BSODs. Use vendor removal tool."
+
+##### Check 3 -- Ghost Registration Analysis
+
+Cross-references Check 1 (Security Center) with Defender's `AMRunningMode` from `Get-MpComputerStatus` to identify exact ghost/protection-gap scenarios:
+
+| Condition | Verdict |
+|-----------|---------|
+| Ghost product + Defender Passive | `[!!]` **CRITICAL: Endpoint UNPROTECTED.** Reports product name and GUID for DEF008. |
+| Ghost product + Defender Normal | `[!]` Ghost exists but Defender recovered. Cleanup still recommended. |
+| Third-party On but engine Off/Snoozed/Expired + Defender Passive | `[!!]` Protection gap -- nobody is scanning. |
+| Third-party On, engine On + Defender Passive | `[OK]` Expected coexistence. |
+| Third-party On + Defender also Normal | `[!]` Dual-engine conflict -- performance risk. |
+| Defender sole protector, Normal mode | `[OK]` No conflicts. |
+
+##### Check 4 -- Defender Policy Overrides
+
+Checks for legacy GPO and MDM keys that disable Defender:
+
+**GPO path:** `HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender`
+
+| Value | Verdict if = 1 |
+|-------|----------------|
+| `DisableAntiSpyware` | `[!!]` Defender disabled by GPO |
+| `DisableAntiVirus` | `[!!]` Defender AV component disabled by GPO |
+
+**MDM path:** `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Defender`
+
+| Value | Verdict if = 0 |
+|-------|----------------|
+| `AllowRealtimeMonitoring` | `[!!]` MDM disabling real-time monitoring |
+
+**Entanglement detection:** If GPO sets `DisableAntiSpyware = 1` AND MDM sets `AllowRealtimeMonitoring = 1`, flags `[!!]` policy conflict -- legacy GPO takes precedence unless `MDMWinsOverGP` is configured.
+
+> **Platform note:** As of Defender platform 4.18.2108.4, `DisableAntiSpyware` is ignored if Tamper Protection is enabled or the device is MDE-onboarded. DEF003 still flags the key because its presence causes compliance report confusion.
+
+#### Example Output (Healthy System, Defender Only)
+
+```
+=== Third-Party AV Conflict & Coexistence ===
+
+--- Security Center AV Products ---
+[OK]  Windows Defender
+       State: On, Signatures: Current, Origin: Microsoft.
+       Exe: C:\ProgramData\...\MsMpEng.exe (found).
+
+--- AV Remnant Scan ---
+[OK]  Registry Remnants
+       No third-party AV remnant registry keys detected.
+
+--- Leftover AV Services ---
+[OK]  Leftover AV Services
+       No orphaned third-party AV services found.
+
+--- Leftover Filter Drivers ---
+[OK]  Leftover Filter Drivers
+       No orphaned third-party AV filter drivers found in the drivers directory.
+
+--- Ghost Registration Analysis ---
+[OK]  No Ghost Registrations
+       Defender is the sole and active protector. No third-party conflicts.
+
+--- Defender Policy Overrides ---
+[OK]  DisableAntiSpyware (GPO)
+       Not set or set to 0. Defender is allowed by Group Policy.
+[OK]  DisableAntiVirus (GPO)
+       Not set or set to 0. Defender AV component is allowed.
+
+RESULT: No issues detected. No third-party AV conflicts or remnants found.
+
+NEXT:   If ghost registration found       -> run DEF008 DEFRemediation to clean up
+        If third-party AV active + working -> Defender passive mode is correct; verify
+          compliance policy accepts this configuration
+        If DisableAntiSpyware present      -> run DEF008 DEFRemediation to remove (if not policy-managed)
+        If remnant drivers/services found  -> may need vendor-specific removal tool
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---------|------------|
+| AV bitmask basics, services, MDE sensor, signal gap (triage) | DEF001 DEFStatusTriage |
+| Definition staleness, update sources, CDN connectivity | DEF002 DEFDefinitionHealth |
+| Real-time protection, tamper protection, exclusions, ASR rules | DEF004 DEFRealtimeProtection |
+| Full GPO vs MDM policy comparison | DEF005 DEFPolicyConflict |
+| Platform/engine version freshness | DEF006 DEFPlatformVersion |
+| Event log timeline, threat history | DEF007 DEFEventAnalysis |
+| Ghost cleanup, service reset, remediation | DEF008 DEFRemediation |
+
+DEF001 does basic ghost detection (exe path check + signal gap). DEF003 does **deep** ghost analysis: full Security Center enumeration with instance GUIDs, 10-vendor remnant scan across registry/services/drivers, and policy override detection.
+
+#### Version History
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial build. 4 check groups: Security Center deep enumeration with `productState` bitmask decode, exe path validation (`pathToSignedProductExe` + `pathToSignedReportingExe`), and instance GUID reporting. AV remnant scan across 10 vendors (registry keys, leftover services via wildcard patterns, leftover filter drivers in `System32\drivers`). Ghost registration analysis cross-referencing Security Center with `AMRunningMode` (5 scenarios including protection gap detection). Defender policy overrides (`DisableAntiSpyware`, `DisableAntiVirus`) at GPO and MDM paths with entanglement detection (GPO disable + MDM enable conflict). |
+
+---
+
 ## BitLocker Suite
 
 ### BL001 -- BLStatusSnapshot

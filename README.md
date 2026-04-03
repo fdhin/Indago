@@ -163,6 +163,7 @@ Scriptlets are pre-built PowerShell tasks stored in `Scriptlets/ScriptletCatalog
 | WU003 | `WUNetworkCheck` | WindowsUpdate | System | DNS resolution, HTTPS connectivity, WinHTTP proxy, system proxy, PAC/WPAD detection, VPN adapter detection, and metered connection status |
 | DEF001 | `DEFStatusTriage` | DefenderEndpoint | System | Security Center AV bitmask decoding, Defender mode, RTP, definitions, services, MDE sensor, and signal gap analysis |
 | DEF002 | `DEFDefinitionHealth` | DefenderEndpoint | System | Definition update source tracing, staleness analysis, fallback chain validation, MMPC connectivity, and scheduled update task health |
+| DEF003 | `DEFThirdPartyAV` | DefenderEndpoint | System | Third-party AV conflict detection, ghost Security Center registrations, 10-vendor remnant scan (registry, services, drivers), and DisableAntiSpyware/DisableAntiVirus policy override detection |
 | APP001 | `WingetUpgradeSystemSilent` | Applications | System | Runs winget upgrade --all as SYSTEM to silently update all machine-wide installed applications |
 | APP002 | `WingetUpgradeUserApps` | Applications | User | Runs winget upgrade --all --scope user as the logged-on user to update user-scoped applications |
 | INT001 | `IntuneForceComplianceCheck` | Intune | System | Triggers a forced Intune compliance evaluation via the Intune Management Extension agent |
