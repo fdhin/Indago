@@ -160,6 +160,7 @@ Scriptlets are pre-built PowerShell tasks stored in `Scriptlets/ScriptletCatalog
 |---|---|---|---|---|
 | WU001 | `WUQuickHealth` | WindowsUpdate | System | 30-second triage: services, disk space, pending reboots, recent failures with HRESULT translation, cache size, and last update date |
 | WU002 | `WUPolicyAudit` | WindowsUpdate | System | GPO/MDM/WSUS policy detection, ring assignment, deferral days, delivery optimization, and policy conflict identification |
+| WU003 | `WUNetworkCheck` | WindowsUpdate | System | DNS resolution, HTTPS connectivity, WinHTTP proxy, system proxy, PAC/WPAD detection, VPN adapter detection, and metered connection status |
 | DEF001 | `DEFStatusTriage` | DefenderEndpoint | System | Security Center AV bitmask decoding, Defender mode, RTP, definitions, services, MDE sensor, and signal gap analysis |
 | DEF002 | `DEFDefinitionHealth` | DefenderEndpoint | System | Definition update source tracing, staleness analysis, fallback chain validation, MMPC connectivity, and scheduled update task health |
 | APP001 | `WingetUpgradeSystemSilent` | Applications | System | Runs winget upgrade --all as SYSTEM to silently update all machine-wide installed applications |

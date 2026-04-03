@@ -351,6 +351,202 @@ WU002 does a basic TCP reachability test for the WSUS server URL (if configured)
 
 ---
 
+### WU003 -- WUNetworkCheck
+
+**Version:** 1.0
+**Category:** WindowsUpdate
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Tests whether the machine can actually reach Microsoft Update infrastructure. Answers: "policies look correct, services are running -- **can the machine physically talk to the update servers?**"
+
+This is the #2 cause of silent update failure in managed environments: the machine is configured correctly but cannot reach the servers due to DNS blocking, firewall rules, proxy misconfiguration, VPN split-tunnel issues, or metered connections. None of these show up in WU001 or WU002.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name WUNetworkCheck
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- DNS Resolution
+
+Resolves key Microsoft Update endpoints using `[System.Net.Dns]::GetHostAddresses()`:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `windowsupdate.microsoft.com` | Primary WU discovery |
+| `update.microsoft.com` | Secondary WU endpoint |
+| `download.windowsupdate.com` | Payload download |
+| `dl.delivery.mp.microsoft.com` | Delivery Optimization / modern payload delivery |
+| WSUS hostname (if configured) | Internal WSUS (extracted from `HKLM:\...\WindowsUpdate\WUServer`) |
+
+The WSUS server is only included if `WUServer` is configured in the GPO registry path. The hostname is parsed from the URL via `[System.Uri]`.
+
+| Condition | Verdict |
+|-----------|---------|
+| DNS resolves to IP(s) | `[OK]` with resolved IPs |
+| DNS resolution fails | `[!!]` -- check DNS server, forwarding, DNS-layer filters |
+
+##### Check 2 -- HTTPS Connectivity (TCP 443)
+
+For each successfully resolved endpoint, tests TCP connectivity using `[System.Net.Sockets.TcpClient]` with async `BeginConnect` and a **5-second timeout**.
+
+For WSUS endpoints, tests the WSUS port (parsed from URL, defaulting to 8530/8531) instead of 443.
+
+> **Design note:** Uses `TcpClient` instead of `Invoke-WebRequest` per vision.md spec. `Invoke-WebRequest` requires IE COM objects that may not be available in SYSTEM context.
+
+| Condition | Verdict |
+|-----------|---------|
+| TCP connection succeeds | `[OK]` |
+| TCP connection fails/times out | `[!!]` -- firewall, web filter, or network appliance may be blocking |
+| Endpoint skipped (DNS failed) | `[i]` -- skipped, DNS failed |
+
+##### Check 3 -- WinHTTP Proxy
+
+Captures WinHTTP proxy configuration via `netsh winhttp show proxy`. Parses output by looking for proxy server patterns (host:port) to avoid locale-dependent label matching.
+
+| Condition | Verdict |
+|-----------|---------|
+| Direct access (no proxy) | `[OK]` |
+| Proxy configured with bypass list | `[i]` -- show proxy + bypass list, advise verifying WU access |
+| Proxy configured, no bypass list | `[!]` -- all traffic routes through proxy |
+
+##### Check 4 -- System Proxy Registry (HKLM)
+
+Reads machine-level proxy at `HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings`:
+
+| Value | Purpose |
+|-------|---------|
+| `ProxyEnable` | 0/1 -- proxy active |
+| `ProxyServer` | Proxy address |
+| `ProxyOverride` | Bypass list |
+
+> **Important:** This reads the **HKLM** (machine-level) proxy, not HKCU. In SYSTEM context, the user-level proxy is irrelevant.
+
+| Condition | Verdict |
+|-----------|---------|
+| `ProxyEnable` not set or = 0 | `[OK]` |
+| Proxy enabled with server | `[i]` -- show config |
+| Proxy enabled, no server | `[!]` -- broken configuration |
+
+##### Check 5 -- PAC / Auto-Config
+
+Detects automatic proxy configuration:
+
+- **PAC file:** `AutoConfigURL` registry value at the Internet Settings path
+- **WPAD:** Byte 8 of `DefaultConnectionSettings` binary blob in the Connections subkey (bit 0x08 = auto-detect enabled)
+
+Full PAC file download and parsing is out of scope. We detect the _configuration_ exists and alert the tech.
+
+| Condition | Verdict |
+|-----------|---------|
+| No PAC or WPAD | `[OK]` |
+| PAC URL configured | `[i]` -- show URL, advise verifying WU access |
+| WPAD auto-detect enabled | `[i]` -- system will try DNS/DHCP proxy discovery |
+
+##### Check 6 -- VPN Adapter Detection
+
+Enumerates network adapters via `Get-NetAdapter` and matches `InterfaceDescription` against 11 common VPN vendor keywords: Cisco/AnyConnect, Palo Alto/GlobalProtect, FortiClient, WireGuard, OpenVPN/TAP-Windows, Juniper, SonicWall/NetExtender, Check Point, Zscaler, NordVPN/NordLynx, Pulse Secure/Ivanti.
+
+| Condition | Verdict |
+|-----------|---------|
+| No VPN adapters | `[OK]` |
+| VPN adapter Up | `[!]` -- advise verifying split-tunnel for WU endpoints |
+| VPN adapter present but Down | `[i]` -- no current impact |
+
+##### Check 7 -- Metered Connection Detection
+
+Checks metered status from two sources:
+
+1. **Global:** `HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\DefaultMediaCost` -- `Ethernet` and `WiFi` cost values (1 = unrestricted, 2+ = metered)
+2. **Per-connection:** `Get-NetConnectionProfile` -- `NetworkCostType` property (Fixed/Variable = metered)
+
+| Condition | Verdict |
+|-----------|---------|
+| No metered connections | `[OK]` |
+| Ethernet globally metered | `[!!]` -- unusual for wired, will defer updates |
+| WiFi/connection metered | `[!]` -- may be intentional |
+
+#### Example Output (Healthy System)
+
+```
+=== Network & Connectivity Diagnostics ===
+
+--- DNS Resolution ---
+[OK]  windowsupdate.microsoft.com
+       Resolves to: 13.107.4.50 (Windows Update discovery)
+[OK]  update.microsoft.com
+       Resolves to: 13.107.4.50 (Windows Update secondary)
+[OK]  download.windowsupdate.com
+       Resolves to: 117.18.232.240, 117.18.232.241 (Payload download)
+[OK]  dl.delivery.mp.microsoft.com
+       Resolves to: 152.199.39.108 (Delivery Optimization)
+
+--- HTTPS Connectivity ---
+[OK]  windowsupdate.microsoft.com:443
+       Reachable. Connection established within 5000ms timeout.
+[OK]  update.microsoft.com:443
+       Reachable.
+[OK]  download.windowsupdate.com:443
+       Reachable.
+[OK]  dl.delivery.mp.microsoft.com:443
+       Reachable.
+
+--- WinHTTP Proxy ---
+[OK]  WinHTTP Proxy
+       Direct access (no proxy server). WinHTTP uses direct connections.
+
+--- System Proxy (HKLM) ---
+[OK]  System Proxy (HKLM)
+       No system-level proxy configured.
+
+--- PAC / Auto-Config ---
+[OK]  Automatic Proxy Configuration
+       No PAC file or WPAD auto-detection configured.
+
+--- VPN Detection ---
+[OK]  VPN Adapters
+       No VPN adapters detected.
+
+--- Metered Connection ---
+[OK]  Metered Connection Status
+       No metered connections detected. Updates will download normally.
+
+RESULT: No issues detected. Network connectivity to Microsoft Update appears healthy.
+
+NEXT:   If DNS fails              -> check DNS server configuration and firewall rules
+        If HTTPS blocked          -> work with firewall team to allow Microsoft Update endpoints
+        If proxy issues           -> verify proxy allows *.windowsupdate.com, *.microsoft.com
+        For TLS/certificate issues -> run WU004 WUTlsCertCheck
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---------|------------|
+| WU services, disk space, reboot flags, history | WU001 WUQuickHealth |
+| GPO/MDM policy settings, WSUS config, deferral/pause | WU002 WUPolicyAudit |
+| TLS 1.2 Schannel, .NET crypto, clock drift, root certs | WU004 WUTlsCertCheck |
+| DISM, CBS.log, SFC, component store | WU005 WUComponentHealth |
+| Event log timeline | WU006 WUEventTimeline |
+| Service reset, cache clear | WU009 WUServiceReset |
+
+WU002 does a basic TCP reachability test for the WSUS server URL. WU003 does full DNS + TCP connectivity against all Microsoft Update endpoints AND the WSUS server. WU003 is the full network diagnostic.
+
+#### Version History
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial build. 7 check groups: DNS resolution for 4 Microsoft endpoints + WSUS (if configured) via `[System.Net.Dns]::GetHostAddresses()`, HTTPS TCP connectivity via `TcpClient` with 5s async timeout, WinHTTP proxy via `netsh winhttp show proxy` with locale-safe parsing, system proxy via HKLM Internet Settings, PAC/WPAD detection via AutoConfigURL + DefaultConnectionSettings blob bit 0x08, VPN adapter detection via `Get-NetAdapter` keyword matching (11 vendors), metered connection via DefaultMediaCost registry + `Get-NetConnectionProfile.NetworkCostType`. `NEXT:` footer routing to WU004. |
+
+---
+
 ## Defender & AV Suite
 
 ### DEF001 -- DEFStatusTriage
