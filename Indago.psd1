@@ -1,7 +1,7 @@
 @{
     # Module identity
     RootModule           = 'Indago.psm1'
-    ModuleVersion        = '1.0.0'
+    ModuleVersion        = '0.1.0'
     GUID                 = 'b0269411-6c65-49f9-b9f9-4195117af5e7'
     Author               = 'Frantz Dhin'
     CompanyName          = 'ENVO IT A/S'
@@ -97,7 +97,7 @@ Key features:
 
             # Release notes (shown on PSGallery version page)
             ReleaseNotes             = @'
-## v1.0.0 (2026-03-29)
+## v0.1.0 (2026-04-04)
 
 Initial release.
 
