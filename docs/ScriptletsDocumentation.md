@@ -1457,6 +1457,182 @@ NEXT:   If TPM not present         -> check BIOS settings (often disabled by def
 
 ---
 
+### BL003 -- BLHardwarePrereqs
+
+**Version:** 1.0
+**Category:** BitLocker
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Validates all hardware and firmware prerequisites that must be met before BitLocker can be enabled. Many of these are BIOS settings that PowerShell can detect but **cannot change**. The script clearly distinguishes between "PowerShell can fix this" and "tech must enter BIOS setup."
+
+BL001 tells the tech "this drive is not encrypted." BL002 confirms "the TPM is healthy." BL003 checks everything else at the hardware/firmware layer: boot mode, Secure Boot, disk partition scheme, system partition geometry, power model, and OEM-specific quirks.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name BLHardwarePrereqs
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- Boot Mode (UEFI vs Legacy BIOS)
+
+**Primary method:** `Confirm-SecureBootUEFI` cmdlet behavior:
+- Returns `$true` or `$false` = machine is UEFI
+- Throws "not supported on this platform" = machine is Legacy BIOS
+
+**Fallback methods:** (1) Check `HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State` presence (UEFI indicator). (2) Parse `bcdedit /enum {current}` for `.efi` vs `.exe` in the boot path.
+
+| Condition | Verdict |
+|-----------|---------|
+| UEFI confirmed | `[OK]` Compatible with Intune silent encryption |
+| Legacy BIOS | `[!!]` Silent BitLocker NOT supported. Convert to UEFI using MBR2GPT.exe |
+| Indeterminate | `[!]` Could not determine boot mode |
+
+##### Check 2 -- Secure Boot Status
+
+**Primary method:** `Confirm-SecureBootUEFI` return value (`$true` = enabled, `$false` = disabled).
+
+**Registry cross-reference:** `HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State\UEFISecureBootEnabled` (DWORD: 1 = enabled, 0 = disabled).
+
+| Condition | Verdict |
+|-----------|---------|
+| Enabled | `[OK]` PCR 7 validation will work |
+| Disabled (UEFI) | `[!!]` PCR 7 binding will fail. Enable in BIOS. |
+| Not available (Legacy BIOS) | `[i]` Convert to UEFI first |
+
+##### Check 3 -- Disk Partition Scheme (GPT vs MBR)
+
+**Method:** `Get-Disk` on the boot disk (identified by `IsBoot` or `IsSystem` property, fallback to Disk 0).
+
+**CIM fallback:** `Win32_DiskPartition` with type string matching for `GPT*` prefix.
+
+| Condition | Verdict |
+|-----------|---------|
+| GPT | `[OK]` Compatible with UEFI and BitLocker |
+| MBR | `[!!]` Requires conversion to GPT via MBR2GPT.exe |
+| RAW / Unknown | `[!!]` No recognized partition table |
+
+##### Check 4 -- System Partition Validation
+
+**Method:** `Get-Partition` on the boot disk to find the EFI System Partition (GPT type GUID `{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}`) or the System partition on Legacy. Then `Get-Volume` for format info.
+
+Three sub-checks:
+
+1. **Existence:** Does the system partition exist?
+2. **Size:** >= 260 MB ideal, >= 100 MB minimum, < 100 MB critical
+3. **Format:** FAT32 expected for UEFI, NTFS for Legacy
+
+| Condition | Verdict |
+|-----------|---------|
+| Found, >= 260 MB, correct format | `[OK]` Meets all requirements |
+| Found, 100-259 MB | `[!]` Minimum met but WinRE may not fit |
+| Found, < 100 MB | `[!!]` Below minimum. Repartitioning needed. |
+| Not found | `[!!]` Cannot stage pre-boot authentication |
+| Wrong format (e.g. NTFS on UEFI) | `[!]` Non-standard layout |
+
+##### Check 5 -- Modern Standby / InstantGo
+
+**Primary method:** Parse `powercfg /a` output for "Standby (S0 Low Power Idle)" strings.
+
+**Registry checks:**
+- `HKLM:\SYSTEM\CurrentControlSet\Control\Power\CsEnabled` (1 = Modern Standby active)
+- `HKLM:\SYSTEM\CurrentControlSet\Control\Power\PlatformAoAcOverride` (0 = forcefully disabled)
+
+| Condition | Verdict |
+|-----------|---------|
+| Supported + CsEnabled = 1 | `[OK]` Background Intune policy delivery optimal |
+| Not supported | `[i]` Common on desktops. Not a BitLocker blocker. |
+| Supported but PlatformAoAcOverride = 0 | `[!]` Forcefully disabled. May impede policy delivery. |
+
+##### Check 6 -- Machine Identification & OEM Quirk Detection
+
+**Method:** `Get-CimInstance Win32_ComputerSystem` (Manufacturer, Model) and `Get-CimInstance Win32_BIOS` (SMBIOSBIOSVersion, ReleaseDate).
+
+Reports manufacturer, model, and BIOS version as informational items. Then flags known OEM issues:
+
+| OEM | Known Issue | Verdict |
+|-----|-------------|---------|
+| Dell | UEFI Bluetooth Stack causes PCR drift; TPM PPI overrides needed for silent provisioning | `[!]` Advisory |
+| Lenovo | Firmware updates shift Secure Boot cert DB, triggering BitLocker recovery prompts fleet-wide | `[!]` Advisory |
+| HP | Fast Boot causes recovery key loop after cold boot / hibernation | `[!]` Advisory |
+| VM (Hyper-V, VMware) | No OEM quirks apply; notes virtual TPM dependency | `[i]` Informational |
+
+> These are awareness items. We cannot detect actual BIOS settings from the OS. Every OEM advisory states "This cannot be fixed by a script -- tech must enter BIOS setup."
+
+#### Example Output (Healthy UEFI Dell System)
+
+```
+=== Hardware & Firmware Prerequisites ===
+
+--- Boot Mode ---
+[OK]  Boot Mode
+       UEFI. Compatible with Intune silent encryption.
+
+--- Secure Boot ---
+[OK]  Secure Boot
+       Enabled. PCR 7 validation will work for BitLocker binding.
+
+--- Disk Partition Scheme ---
+[OK]  Partition Style
+       GPT (Disk 0). Compatible with UEFI and BitLocker.
+
+--- System Partition ---
+[OK]  System Partition
+       Found. Size: 260 MB. Format: FAT32. Meets all requirements.
+
+--- Modern Standby ---
+[OK]  Modern Standby
+       Supported and active (CsEnabled = 1).
+       Background Intune policy delivery will work optimally.
+
+--- Machine Identification ---
+[i]   Manufacturer: Dell Inc.
+       Model: Latitude 5540
+       BIOS Version: 1.18.2 (Released: 2025-11-15)
+
+[!]   Dell System Advisory
+       Dell systems may have "UEFI Bluetooth Stack" enabled in BIOS, which causes
+       PCR measurement drift and prompts for the BitLocker recovery key after reboots.
+       If this occurs, check BIOS > Connection > Disable "Enable UEFI Bluetooth Stack".
+       Also verify TPM Physical Presence Interface (PPI) overrides are enabled
+       in BIOS for silent TPM provisioning.
+       These settings cannot be fixed by a script -- tech must enter BIOS setup.
+
+RESULT: 1 warning(s) found. Review the flagged items above.
+
+NEXT:   If Legacy BIOS        -> convert to UEFI (MBR2GPT.exe) -- requires planning
+        If Secure Boot off    -> enable in BIOS settings
+        If MBR disk           -> convert to GPT before enabling BitLocker
+        If all prereqs met    -> run BL004 BLIntunePolicy to check MDM configuration
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---------|------------|
+| Encryption status, key protectors, OS drive letter, BDESVC | BL001 BLStatusSnapshot |
+| TPM presence, version, firmware vulns, lockout, attestation | BL002 BLTpmHealth |
+| Intune MDM enrollment, BitLocker CSP policy settings | BL004 BLIntunePolicy |
+| Recovery key escrow, AAD connectivity | BL005 BLEscrowCheck |
+| GPO vs MDM policy conflict (FVE keys) | BL006 BLPolicyConflict |
+| Full event log timeline, HRESULT codes | BL007 BLEventAnalysis |
+| WinRE status, manage-bde deep diagnostics, readiness dry run | BL008 BLReadinessCheck |
+| TPM remediation, key protector cleanup | BL009 BLTpmRemediation |
+
+#### Version History
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial build. 6 check groups: boot mode detection (Confirm-SecureBootUEFI with bcdedit and registry fallbacks), Secure Boot status with registry cross-reference, disk partition scheme GPT/MBR via Get-Disk with Win32_DiskPartition CIM fallback, system partition validation (EFI partition existence, size thresholds at 100/260 MB, FAT32/NTFS format check), Modern Standby detection via powercfg /a + CsEnabled + PlatformAoAcOverride registry, OEM identification with Dell/Lenovo/HP quirk advisories (UEFI Bluetooth Stack, firmware PCR drift, Fast Boot loops) and VM detection (Hyper-V, VMware). |
+
+---
+
 ## Firewall Suite
 
 ### FW001 -- FWStatusTriage

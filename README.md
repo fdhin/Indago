@@ -169,6 +169,7 @@ Scriptlets are pre-built PowerShell tasks stored in `Scriptlets/ScriptletCatalog
 | INT001 | `IntuneForceComplianceCheck` | Intune | System | Triggers a forced Intune compliance evaluation via the Intune Management Extension agent |
 | BL001 | `BLStatusSnapshot` | BitLocker | System | Volume encryption status with ghost-state detection, OS drive letter validation, last BitLocker event, and BDESVC health |
 | BL002 | `BLTpmHealth` | BitLocker | System | TPM presence, readiness, version, firmware vulnerability scan (ROCA, TPM-FAIL), lockout state, and attestation readiness |
+| BL003 | `BLHardwarePrereqs` | BitLocker | System | UEFI vs Legacy BIOS boot mode, Secure Boot status, GPT vs MBR partition scheme, system partition validation, Modern Standby detection, and OEM quirk flagging (Dell, Lenovo, HP) |
 | FW001 | `FWStatusTriage` | Firewall | System | Firewall profile status with active adapter correlation, Security Center cross-reference for ghost detection, and MpsSvc health |
 | FW002 | `FWPolicyConflict` | Firewall | System | Side-by-side Local/GPO/MDM firewall policy comparison, EnableFirewall=0 detection, MDMWinsOverGP validation, and orphaned GPO detection |
 
