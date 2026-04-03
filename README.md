@@ -172,6 +172,7 @@ Scriptlets are pre-built PowerShell tasks stored in `Scriptlets/ScriptletCatalog
 | BL003 | `BLHardwarePrereqs` | BitLocker | System | UEFI vs Legacy BIOS boot mode, Secure Boot status, GPT vs MBR partition scheme, system partition validation, Modern Standby detection, and OEM quirk flagging (Dell, Lenovo, HP) |
 | FW001 | `FWStatusTriage` | Firewall | System | Firewall profile status with active adapter correlation, Security Center cross-reference for ghost detection, and MpsSvc health |
 | FW002 | `FWPolicyConflict` | Firewall | System | Side-by-side Local/GPO/MDM firewall policy comparison, EnableFirewall=0 detection, MDMWinsOverGP validation, and orphaned GPO detection |
+| FW003 | `FWThirdParty` | Firewall | System | Security Center deep enumeration with productState bitmask decode, 14-vendor remnant scan, "Managed by Vendor" state detection, ghost registration cross-reference analysis, and WFP filter driver detection |
 
 ### Execution Contexts
 

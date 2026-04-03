@@ -2014,3 +2014,272 @@ NEXT:   If GPO is intentionally disabling firewall -> escalate to GPO owner, do 
 | Version | Changes |
 |---------|---------|
 | 1.0 | Initial build. 4 check groups: side-by-side policy comparison from 3 sources (Local/GPO/MDM) per profile, EnableFirewall=0 detection with legacy GPO callout, MDMWinsOverGP conflict resolution with ProviderSet/WinningProvider confirmation key validation, orphaned GPO detection via `Win32_ComputerSystem.PartOfDomain`. Explicit root-cause explanation when GPO overrides MDM due to missing MDMWinsOverGP. `NEXT:` footer routing to FW003/FW006. |
+
+---
+
+### FW003 -- FWThirdParty
+
+**Version:** 1.0
+**Category:** Firewall
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Detects third-party firewalls interfering with Windows Firewall -- either **actively managing traffic** or **left behind as ghost registrations** after uninstallation.
+
+FW001 detects that the firewall is disabled or that Security Center shows a desync. FW002 identifies whether GPO/MDM policy conflicts are the root cause. FW003 goes deeper into the **third-party product layer**: the products themselves, their remnants on disk and in the registry, the "Managed by Vendor" yield state, and orphaned kernel-level WFP filter drivers.
+
+The **#1 silent compliance failure** in managed fleets is the "ghost state": a third-party firewall was uninstalled, but its Security Center WMI registration persists. Windows continues yielding to the absent product, leaving the endpoint with **zero active firewalls**. FW003 provides the detailed forensic analysis to identify and classify these scenarios.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name FWThirdParty
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- Security Center FirewallProduct Deep Enumeration
+
+**Method:** `Get-CimInstance -Namespace ROOT/SecurityCenter2 -ClassName FirewallProduct`
+
+For each registered product, extracts and decodes all properties:
+
+| Property | What We Report |
+|----------|----------------|
+| `displayName` | Product name |
+| `instanceGuid` | Unique installation GUID |
+| `pathToSignedProductExe` | Primary executable path |
+| `productState` | Full bitmask decode (see below) |
+
+**productState Bitmask Decode:**
+
+| Field | Mask | Values |
+|-------|------|--------|
+| ProductState | `0xF000` | `0x1000` = On, `0x0000` = Off, `0x2000` = Snoozed, `0x3000` = Expired |
+| SignatureStatus | `0x00F0` | `0x00` = Up to date, `0x10` = Out of date |
+| ProductOwner | `0x0F00` | `0x000` = Third-party, `0x100` = Microsoft |
+
+**Identification:** Native Windows Firewall identified by GUID `{D68DDC3A-831F-4fae-9E44-DA132C1ACF46}` or display name matching `*Windows Defender*` / `*Windows Firewall*`.
+
+| Condition | Verdict |
+|-----------|---------|
+| Only native Windows Firewall, state On | `[OK]` No third-party interference |
+| Third-party registered, state On, exe exists | `[i]` Active third-party firewall managing traffic |
+| Third-party registered, state Off/Expired/Snoozed, exe exists | `[!!]` Installed but not protecting |
+| Third-party registered, exe missing | `[!!]` Ghost registration |
+| SecurityCenter2 not available (Server) | `[i]` Skip, remaining checks still run |
+
+**Difference from FW001:** FW001 performs a light Security Center check (name + on/off + basic ghost flag). FW003 performs full productState bitmask decode (ProductState, SignatureStatus, ProductOwner bits) and cross-references against disk/registry evidence.
+
+##### Check 2 -- Third-Party Firewall Remnant Scan
+
+Scans two independent evidence sources for 14 known third-party firewall vendors:
+
+**Registry scan:** Both 64-bit and WOW6432Node Uninstall keys:
+- `HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall`
+- `HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall`
+
+**Vendor coverage:**
+
+| Vendor | Match Patterns | Install Path | Vendor Registry |
+|--------|---------------|--------------|-----------------|
+| Symantec / Broadcom | `*Symantec*`, `*Endpoint Protection*` | `C:\Program Files\Symantec\...` | `HKLM:\SOFTWARE\Symantec\InstalledApps` |
+| McAfee / Trellix | `*McAfee*`, `*Trellix*` | `C:\Program Files\McAfee\...` | `HKLM:\SOFTWARE\McAfee\Endpoint Security` |
+| Sophos | `*Sophos*` | `C:\Program Files\Sophos` | `HKLM:\SOFTWARE\Sophos` |
+| ESET | `*ESET*` | `C:\Program Files\ESET\...` | `HKLM:\SOFTWARE\ESET` |
+| Comodo | `*Comodo*`, `*COMODO*` | `C:\Program Files\COMODO\...` | `HKLM:\SOFTWARE\ComodoGroup` |
+| ZoneAlarm | `*ZoneAlarm*`, `*Zone Labs*` | `C:\Program Files\Zone Labs\...` | `HKLM:\SOFTWARE\Zone Labs` |
+| GlassWire | `*GlassWire*` | `C:\Program Files (x86)\GlassWire` | `HKLM:\SOFTWARE\GlassWire` |
+| TinyWall | `*TinyWall*` | `C:\Program Files\TinyWall` | `HKLM:\SOFTWARE\TinyWall` |
+| Kaspersky | `*Kaspersky*` | -- | `HKLM:\SOFTWARE\KasperskyLab` |
+| Norton | `*Norton*` | -- | -- |
+| Bitdefender | `*Bitdefender*` | -- | `HKLM:\SOFTWARE\Bitdefender` |
+| F-Secure / WithSecure | `*F-Secure*`, `*WithSecure*` | -- | `HKLM:\SOFTWARE\F-Secure` |
+| Trend Micro | `*Trend Micro*` | -- | `HKLM:\SOFTWARE\TrendMicro` |
+| CrowdStrike | `*CrowdStrike*` | `C:\Program Files\CrowdStrike` | `HKLM:\SYSTEM\CrowdStrike` |
+
+| Condition | Verdict |
+|-----------|---------|
+| No third-party products found | `[OK]` Clean |
+| Product found in Uninstall registry | `[i]` Installed (name, version, publisher) |
+| No Uninstall entry but install dir or vendor registry exists | `[!]` Remnant detected, incomplete uninstall |
+
+##### Check 3 -- "Managed by Vendor" State Detection
+
+**Method:** Read `EnableFirewall` from the local firewall service parameter registry for each profile.
+
+**Path:** `HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy`
+- Subkeys: `DomainProfile`, `StandardProfile` (=Private), `PublicProfile`
+- Value: `EnableFirewall` (DWORD: 0 = Disabled/yielding, 1 = Enabled)
+
+> **Note:** FW002 reads `EnableFirewall` from the **GPO** (`SOFTWARE\Policies`) and **MDM** (`SOFTWARE\Microsoft\PolicyManager`) policy hives. FW003 reads from the **local service parameters** hive (`SYSTEM\CurrentControlSet\Services\SharedAccess`), which is the direct mechanism for "Managed by Vendor" yielding. Different registry paths, different diagnostic purpose.
+
+| Condition | Verdict |
+|-----------|---------|
+| All profiles EnableFirewall = 1 | `[OK]` No "Managed by Vendor" state |
+| EnableFirewall = 0 + active third-party (On in SC) | `[i]` Expected -- Windows yielding to vendor |
+| EnableFirewall = 0 + NO active third-party | `[!!]` Ghost "Managed by Vendor" -- endpoint UNPROTECTED |
+
+##### Check 4 -- Ghost Registration Analysis
+
+Cross-references Check 1 (Security Center entries) against Check 2 (disk + registry evidence) for each third-party Security Center entry.
+
+Evidence grid per product:
+
+1. Does `pathToSignedProductExe` exist on disk?
+2. Does the product appear in Uninstall registry?
+3. Does the vendor install directory or registry key exist?
+
+**Ghost confidence classifications:**
+
+| Classification | Evidence | Verdict |
+|----------------|----------|---------|
+| Confirmed Ghost | SC entry + exe missing + no Uninstall entry | `[!!]` Product fully removed but SC registration persists |
+| Partial Uninstall | SC entry + exe missing + Uninstall entry present | `[!!]` Uninstaller failed to complete |
+| Inactive Product | SC entry + exe present + state not On | `[!]` Installed but not protecting |
+| Active Product | SC entry + exe present + state On | `[OK]` No ghost concern |
+| Orphaned Remnant | No SC entry + vendor files/registry remain | `[!]` Not causing compliance issues but dirty |
+
+##### Check 5 -- WFP Callout Driver Detection
+
+**Method:** `fltmc instances` -- enumerate minifilter driver instances.
+
+> **Note:** Mapping WFP callout GUIDs to specific driver files is not possible with native PowerShell (requires NtQuerySystemInformation or PE header parsing). `fltmc instances` provides practical minifilter/callout driver detection.
+
+Known vendor filter driver patterns:
+
+| Vendor | Filter Names |
+|--------|-------------|
+| Symantec | `SymEFA`, `SRTSP`, `BHDrvx64` |
+| McAfee / Trellix | `mfehidk`, `mfefirek` |
+| Sophos | `SophosED`, `SAVOnAccess` |
+| ESET | `eamonm`, `ekrn` |
+| Kaspersky | `klif`, `kneps` |
+| Norton | `SymEFA`, `ccSet` |
+| Bitdefender | `bdselfpr`, `BDSandBox` |
+| Trend Micro | `TmPreFlt`, `TmFileEncDmk` |
+| CrowdStrike | `CSAgent`, `csagent` |
+
+| Condition | Verdict |
+|-----------|---------|
+| Only Microsoft filter drivers | `[OK]` No third-party WFP interference |
+| Known vendor drivers + product installed | `[i]` Expected |
+| Known vendor drivers + product NOT installed | `[!!]` Orphaned kernel filter driver |
+| Unknown non-Microsoft drivers | `[i]` May be VPN, EDR, backup software |
+
+#### Example Output (Ghost Registration)
+
+```
+=== Third-Party Firewall Detection ===
+
+--- Security Center: Registered Firewall Products ---
+[OK]  Windows Defender Firewall
+       State: On. GUID: {D68DDC3A-831F-4fae-9E44-DA132C1ACF46}.
+       Owner: Microsoft. Signatures: Up to date.
+[!!]  Norton 360
+       GHOST REGISTRATION -- product registered but executable NOT found on disk.
+       GUID: {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}. Claimed state: On.
+       Path: C:\Program Files\Norton Security\Engine\22.21.5.40\NortonSecurity.exe
+       Windows Firewall cannot reactivate while this ghost persists.
+       Run FW006 FWRemediation to remove the ghost registration.
+
+--- Third-Party Firewall Remnant Scan ---
+[!]   Norton -- Remnant Detected
+       Vendor registry key found: HKLM:\SOFTWARE\Symantec
+       No Uninstall entry found -- product may be partially uninstalled.
+       Run vendor cleanup tool to fully remove remnants.
+
+--- "Managed by Vendor" State ---
+[!!]  Domain Profile: EnableFirewall = 0
+       Windows Firewall is set to yield to a third-party product.
+       BUT no active third-party firewall was detected in Security Center.
+       RESULT: This profile has ZERO active firewalls.
+       Run FW006 FWRemediation to restore Windows Firewall.
+[OK]  Private Profile: EnableFirewall = 1
+       Windows Firewall is not yielding on this profile.
+[OK]  Public Profile: EnableFirewall = 1
+       Windows Firewall is not yielding on this profile.
+
+--- Ghost Registration Analysis ---
+[!!]  CONFIRMED GHOST: Norton 360
+       Security Center registration present but product is NOT installed.
+       - Executable: MISSING (C:\Program Files\Norton Security\Engine\22.21.5.40\NortonSecurity.exe)
+       - Uninstall entry: MISSING
+       - Vendor remnants: PRESENT (orphaned registry/files)
+       Windows Firewall cannot reactivate while this ghost persists.
+       Run FW006 FWRemediation to remove the ghost registration.
+
+--- WFP Filter Driver Check ---
+[OK]  No Third-Party WFP Filter Drivers Detected
+       Only Microsoft filter drivers are active.
+
+RESULT: 3 issue(s) and 1 warning(s) found. Review items above.
+
+NEXT:   If ghost registration found     -> run FW006 FWRemediation to clean up
+        If active third-party firewall   -> coordinate with vendor for proper configuration
+        If WFP filter drivers orphaned   -> manual removal required (driver-level)
+        If no third-party issues         -> run FW004 FWServiceHealth for deeper plumbing checks
+```
+
+#### Example Output (Clean System)
+
+```
+=== Third-Party Firewall Detection ===
+
+--- Security Center: Registered Firewall Products ---
+[OK]  Windows Defender Firewall
+       State: On. GUID: {D68DDC3A-831F-4fae-9E44-DA132C1ACF46}.
+       Owner: Microsoft. Signatures: Up to date.
+
+--- Third-Party Firewall Remnant Scan ---
+[OK]  No Third-Party Firewall Remnants
+       No known third-party firewall products or remnants found in registry or on disk.
+
+--- "Managed by Vendor" State ---
+[OK]  Domain Profile: EnableFirewall = 1
+       Windows Firewall is not yielding on this profile.
+[OK]  Private Profile: EnableFirewall = 1
+       Windows Firewall is not yielding on this profile.
+[OK]  Public Profile: EnableFirewall = 1
+       Windows Firewall is not yielding on this profile.
+
+--- Ghost Registration Analysis ---
+[OK]  No Third-Party Security Center Entries
+       No third-party firewall products registered. No ghost risk.
+
+--- WFP Filter Driver Check ---
+[OK]  No Third-Party WFP Filter Drivers Detected
+       Only Microsoft filter drivers are active.
+
+RESULT: No issues detected. No third-party firewall interference found.
+
+NEXT:   If ghost registration found     -> run FW006 FWRemediation to clean up
+        If active third-party firewall   -> coordinate with vendor for proper configuration
+        If WFP filter drivers orphaned   -> manual removal required (driver-level)
+        If no third-party issues         -> run FW004 FWServiceHealth for deeper plumbing checks
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---------|------------|
+| Firewall profile live state (enabled/disabled via `Get-NetFirewallProfile`) | FW001 FWStatusTriage |
+| Active adapter correlation | FW001 |
+| MpsSvc service health | FW001 |
+| GPO registry reads (`HKLM\SOFTWARE\Policies\Microsoft\WindowsFirewall`) | FW002 FWPolicyConflict |
+| MDM policy reads (`HKLM\SOFTWARE\Microsoft\PolicyManager`) | FW002 FWPolicyConflict |
+| MDMWinsOverGP conflict resolution | FW002 FWPolicyConflict |
+| Orphaned GPO detection (tattooed keys on non-domain machines) | FW002 FWPolicyConflict |
+| BFE/RpcSs dependency chain, WFP state, log analysis | FW004 FWServiceHealth |
+| Rule count, duplicates, bloat | FW005 FWRuleDiagnostic |
+| Profile re-enable, ghost cleanup, service restart, reset | FW006 FWRemediation |
+
+#### Version History
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial build. 5 check groups: Security Center FirewallProduct deep enumeration with full productState bitmask decode (ProductState/SignatureStatus/ProductOwner), third-party firewall remnant scan covering 14 vendors (Symantec, McAfee/Trellix, Sophos, ESET, Comodo, ZoneAlarm, GlassWire, TinyWall, Kaspersky, Norton, Bitdefender, F-Secure/WithSecure, Trend Micro, CrowdStrike) via Uninstall registry + install paths + vendor-specific registry, "Managed by Vendor" state detection via SharedAccess EnableFirewall per-profile, ghost registration cross-reference analysis with confidence scoring (confirmed ghost, partial uninstall, inactive, orphaned remnant), WFP filter driver detection via fltmc instances with vendor driver matching. `NEXT:` footer routing to FW004/FW006. |
