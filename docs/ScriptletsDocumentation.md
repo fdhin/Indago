@@ -2858,3 +2858,197 @@ NEXT:   If ghost registration found     -> run FW006 FWRemediation to clean up
 | Version | Changes |
 |---------|---------|
 | 1.0 | Initial build. 5 check groups: Security Center FirewallProduct deep enumeration with full productState bitmask decode (ProductState/SignatureStatus/ProductOwner), third-party firewall remnant scan covering 14 vendors (Symantec, McAfee/Trellix, Sophos, ESET, Comodo, ZoneAlarm, GlassWire, TinyWall, Kaspersky, Norton, Bitdefender, F-Secure/WithSecure, Trend Micro, CrowdStrike) via Uninstall registry + install paths + vendor-specific registry, "Managed by Vendor" state detection via SharedAccess EnableFirewall per-profile, ghost registration cross-reference analysis with confidence scoring (confirmed ghost, partial uninstall, inactive, orphaned remnant), WFP filter driver detection via fltmc instances with vendor driver matching. `NEXT:` footer routing to FW004/FW006. |
+
+---
+
+### FW004 -- FWServiceHealth
+
+**Version:** 1.0
+**Category:** Firewall
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Goes deeper into the firewall plumbing when the obvious causes (policy conflicts, third-party products) have been ruled out. FW001 tells the tech "the firewall is off." FW002 identifies "GPO is disabling it." FW003 says "a ghost registration is interfering." FW004 answers the next question: **"The configuration looks correct and there's no third-party interference -- so why isn't the firewall actually working?"**
+
+The Windows Firewall is not a monolithic service. It's a user-mode orchestrator (`MpsSvc`) sitting on top of a dependency chain: `RpcSs` (RPC) -> `BFE` (Base Filtering Engine) -> `MpsSvc`. If any link in the chain breaks, the entire firewall fails -- often silently.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name FWServiceHealth
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- Service Dependency Chain
+
+Validates the three-tier dependency chain bottom-up:
+
+| Service | Display Name | Role | Dependency |
+|---------|-------------|------|-----------|
+| `RpcSs` | Remote Procedure Call | Foundation for COM/DCOM | None |
+| `BFE` | Base Filtering Engine | User-mode WFP orchestrator | Depends on RpcSs |
+| `MpsSvc` | Windows Defender Firewall | Translates profiles into WFP filters | Depends on BFE |
+
+For each service, reports status, start type, and Win32 exit code from `Win32_Service`.
+
+| Condition | Verdict |
+|-----------|---------|
+| Running + Automatic | `[OK]` |
+| Running + not Automatic | `[!]` May not survive reboot |
+| Stopped + Automatic | `[!!]` Should be running |
+| Stopped + Disabled | `[!!]` Intentionally disabled |
+| StartPending / StopPending | `[!!]` Stuck in transitional state |
+| ExitCode != 0 (while running) | `[!]` Previous unclean shutdown |
+
+If a lower-tier service is down, explains the cascade:
+- RpcSs down -> BFE cannot start -> MpsSvc cannot start -> firewall dead
+- BFE down -> MpsSvc cannot communicate with WFP -> rules not enforced
+
+##### Check 2 -- WFP State
+
+Checks whether the Windows Filtering Platform kernel engine is responsive by running `netsh wfp show state` to a temporary file.
+
+| Condition | Verdict |
+|-----------|---------|
+| Command succeeds + file has content | `[OK]` WFP engine responsive |
+| Command fails (non-zero exit) | `[!!]` WFP not responding |
+| Command succeeds but file very small | `[!]` WFP may be degraded |
+
+> **Note:** Full WFP XML parsing (filter ID matching, rule tracing) is not performed here due to known malformed XML bugs on Win10 22H2. FW004 checks WFP **infrastructure health**; rule-level diagnostics belong in FW005.
+
+##### Check 3 -- Firewall Log Configuration & Recent Activity
+
+**Sub-check 3a:** Queries `Get-NetFirewallProfile` for log settings per profile (LogBlocked, LogAllowed, LogFileName, LogMaxSizeKilobytes). Firewall logging is **disabled by default** on all Windows editions -- techs often have zero visibility into drops.
+
+| Condition | Verdict |
+|-----------|---------|
+| LogBlocked = True | `[OK]` Drops are being recorded |
+| LogBlocked = False | `[!]` Drops NOT logged -- enable for troubleshooting |
+| LogMaxSize <= 4096 | `[i]` Default size, consider increasing |
+
+**Sub-check 3b:** If logging is enabled, checks the log file: existence, size (flags near 4 MB default limit), and reads the tail for recent DROP entries and `INFO-EVENTS-LOST` entries.
+
+| Condition | Verdict |
+|-----------|---------|
+| Log file exists | `[OK]` |
+| Log missing but logging enabled | `[!!]` |
+| Log near 4 MB limit | `[!]` Rolling over rapidly |
+| `INFO-EVENTS-LOST` found | `[!!]` Extreme load -- firewall dropping telemetry |
+| Recent DROP entries | `[i]` Reports last few for context |
+
+##### Check 4 -- Service Security Descriptor (SDDL) Validation
+
+Runs `sc.exe sdshow MpsSvc` and validates that the SDDL contains the two critical ACEs:
+- `SY` (LocalSystem) -- SYSTEM must have access
+- `BA` (Built-in Administrators) -- Admins must have access
+
+Advanced malware (ZeroAccess) and aggressive "optimization" scripts modify the SDDL to prevent the firewall from starting. The service silently fails with "Access Denied."
+
+| Condition | Verdict |
+|-----------|---------|
+| Both SY and BA ACEs present | `[OK]` Permissions intact |
+| SY or BA missing | `[!!]` Service descriptor tampered |
+| Cannot retrieve SDDL | `[!]` Cannot validate |
+
+> **Note:** Does not compare against a full reference SDDL (varies between Windows versions). Only validates the two critical security principals.
+
+##### Check 5 -- Firewall Event Log Errors
+
+Queries two log sources for the last 24 hours:
+
+**WFAS log** (`Microsoft-Windows-Windows Firewall With Advanced Security/Firewall`):
+
+| Event ID | Meaning |
+|----------|---------|
+| 2003 | Firewall profile could not be applied |
+
+**System log** (firewall service failures):
+
+| Event ID | Meaning |
+|----------|---------|
+| 5027 | MpsSvc unable to retrieve security policy |
+| 5028 | MpsSvc unable to parse security policy |
+| 5030 | Windows Firewall Service failed to start |
+| 5035 | Windows Firewall Driver failed to start |
+| 5037 | Windows Firewall Driver critical runtime error |
+
+| Condition | Verdict |
+|-----------|---------|
+| No error events in 24h | `[OK]` |
+| Service failure events (5027-5037) | `[!!]` Critical |
+| Profile events (2003) | `[!!]` |
+
+#### Example Output (Healthy System, Logging Disabled)
+
+```
+=== Firewall Service Dependencies & WFP Health ===
+
+--- Service Dependency Chain ---
+[OK]  RpcSs (Remote Procedure Call)
+       Running, start type: Automatic. Exit code: 0.
+[OK]  BFE (Base Filtering Engine)
+       Running, start type: Automatic. Exit code: 0.
+[OK]  MpsSvc (Windows Defender Firewall)
+       Running, start type: Automatic. Exit code: 0.
+
+--- WFP State ---
+[OK]  Windows Filtering Platform
+       WFP engine is responsive. State file generated (142 KB).
+
+--- Firewall Log Configuration ---
+[!]   Domain Profile Log
+       LogBlocked: False. LogAllowed: False.
+       Firewall drops are NOT being logged. Enable for troubleshooting.
+[!]   Private Profile Log
+       LogBlocked: False. LogAllowed: False.
+       Firewall drops are NOT being logged. Enable for troubleshooting.
+[!]   Public Profile Log
+       LogBlocked: False. LogAllowed: False.
+       Firewall drops are NOT being logged. Enable for troubleshooting.
+
+--- Service Security Descriptor ---
+[OK]  MpsSvc SDDL
+       Both SY (SYSTEM) and BA (Administrators) ACEs are present.
+       Service permissions are intact.
+
+--- Firewall Event Log ---
+[OK]  No Errors (Last 24h)
+       No firewall service failure events found in System or WFAS logs.
+
+RESULT: 3 warning(s) found. Review items marked [!] above.
+
+NEXT:   If BFE or RpcSs stopped     -> restart the dependency chain (run FW006 FWRemediation)
+        If service descriptor tampered -> run FW006 FWRemediation to reset
+        If WFP degraded             -> may require reboot or deeper investigation
+        If all clean                -> run FW005 FWRuleDiagnostic to check for rule corruption
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---------|------------|
+| Firewall profile enabled/disabled state | FW001 FWStatusTriage |
+| Active adapter correlation | FW001 |
+| Security Center FirewallProduct cross-reference | FW001 |
+| GPO/MDM policy reads for EnableFirewall | FW002 FWPolicyConflict |
+| MDMWinsOverGP conflict resolution | FW002 |
+| Orphaned GPO detection | FW002 |
+| Third-party firewall detection, ghost analysis | FW003 FWThirdParty |
+| WFP callout driver detection (fltmc) | FW003 |
+| Rule count, duplicates, bloat | FW005 FWRuleDiagnostic |
+| Profile re-enable, ghost cleanup, service restart | FW006 FWRemediation |
+
+**Overlap notes:**
+- FW001 performs a basic MpsSvc check (Running/Stopped, Automatic/Manual/Disabled). FW004 checks the **full dependency chain** (RpcSs -> BFE -> MpsSvc) with exit codes, validates the SDDL, and checks WFP health. Different depth.
+- FW003 detects third-party WFP filter drivers via `fltmc instances`. FW004 checks WFP **infrastructure** via `netsh wfp show state`. Different aspects of the same platform.
+
+#### Version History
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial build. 5 check groups: service dependency chain (RpcSs/BFE/MpsSvc) with Get-Service status, StartType, and Win32_Service ExitCode validation plus cascade failure explanation, WFP state check via netsh wfp show state to temp file with responsiveness verification, firewall log configuration audit via Get-NetFirewallProfile (LogBlocked/LogAllowed per profile, log file existence/size with 4MB threshold, tail 50 lines for DROP and INFO-EVENTS-LOST detection), MpsSvc SDDL validation via sc.exe sdshow with SY/BA ACE presence check for malware tampering detection, firewall event log scan (WFAS log ID 2003, System log IDs 5027/5028/5030/5035/5037, last 24h window). `NEXT:` footer routing to FW005/FW006. |

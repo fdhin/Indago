@@ -176,6 +176,7 @@ Scriptlets are pre-built PowerShell tasks stored in `Scriptlets/ScriptletCatalog
 | FW001 | `FWStatusTriage` | Firewall | System | Firewall profile status with active adapter correlation, Security Center cross-reference for ghost detection, and MpsSvc health |
 | FW002 | `FWPolicyConflict` | Firewall | System | Side-by-side Local/GPO/MDM firewall policy comparison, EnableFirewall=0 detection, MDMWinsOverGP validation, and orphaned GPO detection |
 | FW003 | `FWThirdParty` | Firewall | System | Security Center deep enumeration with productState bitmask decode, 14-vendor remnant scan, "Managed by Vendor" state detection, ghost registration cross-reference analysis, and WFP filter driver detection |
+| FW004 | `FWServiceHealth` | Firewall | System | Full RpcSs/BFE/MpsSvc dependency chain validation with Win32 exit codes and cascade failure explanation, WFP engine responsiveness check via netsh, firewall log configuration audit per profile with DROP and INFO-EVENTS-LOST detection, MpsSvc SDDL validation for malware tampering (SY+BA ACE check), and firewall event log scan (WFAS + System log IDs 2003/5027-5037) |
 
 ### Execution Contexts
 
