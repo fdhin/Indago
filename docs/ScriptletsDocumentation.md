@@ -547,6 +547,204 @@ WU002 does a basic TCP reachability test for the WSUS server URL. WU003 does ful
 
 ---
 
+### WU004 -- WUTlsCertCheck
+
+**Version:** 1.0
+**Category:** WindowsUpdate
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Verifies the **cryptographic and time-keeping prerequisites** that Windows Update depends on. WU003 confirms the machine can reach Microsoft endpoints at the network layer (DNS resolves, TCP socket opens). WU004 answers the next question: **will the TLS handshake succeed once the socket is open?**
+
+Missing TLS 1.2 support, expired root certificates, or a drifted system clock all produce maddeningly generic HRESULTs (`0x80072F8F`, `0x800B0109`, `0x80096004`) that are impossible to diagnose without specifically probing the TLS stack, certificate store, and clock. WU004 exists to surface these silent killers.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name WUTlsCertCheck
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- Schannel TLS 1.2 Configuration
+
+Reads the Schannel registry to determine whether TLS 1.2 is enabled for both Client and Server roles:
+
+| Registry Path | Values Checked |
+|---------------|----------------|
+| `HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client` | `Enabled`, `DisabledByDefault` |
+| `HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server` | `Enabled`, `DisabledByDefault` |
+
+On Windows 10+, TLS 1.2 is enabled by default when no Schannel subkey exists. The check handles this correctly.
+
+| Condition | Verdict |
+|-----------|---------|
+| Subkey absent (OS defaults) | `[OK]` -- TLS 1.2 enabled by default |
+| `Enabled` = 1, `DisabledByDefault` = 0 | `[OK]` -- explicitly enabled |
+| `Enabled` = 0 | `[!!]` -- TLS 1.2 explicitly disabled |
+| `DisabledByDefault` = 1 | `[!!]` -- apps must opt in to TLS 1.2 |
+
+**Legacy protocol detection:** Also checks if TLS 1.0 or SSL 3.0 Client subkeys are still enabled. Flags as `[!]` warning (security risk but not blocking WU).
+
+##### Check 2 -- .NET Framework TLS Defaults
+
+Reads .NET Framework 4.x registry for both 64-bit and 32-bit (WOW6432Node) architectures:
+
+| Registry Path | Values Checked |
+|---------------|----------------|
+| `HKLM:\SOFTWARE\Microsoft\.NETFramework\v4.0.30319` | `SchUseStrongCrypto`, `SystemDefaultTlsVersions` |
+| `HKLM:\SOFTWARE\WOW6432Node\Microsoft\.NETFramework\v4.0.30319` | Same keys |
+
+Both architectures are checked independently because WU components can run as either 32-bit or 64-bit processes.
+
+| Condition | Verdict |
+|-----------|---------|
+| `SchUseStrongCrypto` = 1 or `SystemDefaultTlsVersions` = 1 | `[OK]` |
+| Both missing or 0 | `[!!]` -- .NET defaults to TLS 1.0 |
+| Registry path not found | `[i]` -- .NET 4.x may not be installed for this arch |
+
+##### Check 3 -- WinHTTP Default Secure Protocols
+
+Reads the `DefaultSecureProtocols` DWORD at the WinHTTP registry path. This is distinct from the Schannel check -- it specifically governs the WinHTTP subsystem used by `wuauserv` and `svchost`.
+
+| Registry Path | Value |
+|---------------|-------|
+| `HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\WinHttp` | `DefaultSecureProtocols` |
+| `HKLM:\SOFTWARE\WOW6432Node\...\WinHttp` | Same (32-bit) |
+
+The value is a protocol bitmask:
+
+| Bit | Protocol |
+|-----|----------|
+| `0x00000800` | TLS 1.2 |
+| `0x00000200` | TLS 1.1 |
+| `0x00000080` | TLS 1.0 |
+| `0x00000020` | SSL 3.0 |
+
+| Condition | Verdict |
+|-----------|---------|
+| Not configured (OS defaults) | `[OK]` -- TLS 1.2 included on Win10+ |
+| Configured and includes `0x800` | `[OK]` -- decoded protocols shown |
+| Configured but missing `0x800` | `[!!]` -- WinHTTP cannot negotiate TLS 1.2, causes `0x80072F8F` |
+
+##### Check 4 -- System Clock & Time Source
+
+Verifies that the system clock is accurate by:
+
+1. Checking the W32Time service status
+2. Querying the configured time source via `w32tm /query /source`
+3. Measuring clock offset via `w32tm /stripchart /computer:<source> /samples:1 /dataonly`
+
+| Condition | Verdict |
+|-----------|---------|
+| W32Time not running | `[!]` -- cannot verify time sync |
+| Offset > 5 minutes (300s) | `[!!]` -- TLS cert validation WILL fail |
+| Offset > 1 minute (60s) | `[!]` -- drift detected, not yet critical |
+| Offset < 1 minute | `[OK]` -- clock accurate |
+| Source is Local CMOS Clock / Free-running | `[!]` -- no external NTP sync |
+| Cannot measure offset | `[i]` -- NTP server may be unreachable |
+
+##### Check 5 -- Microsoft Root Certificate Validation
+
+Searches `Cert:\LocalMachine\Root` for two critical Microsoft root CAs:
+
+| Certificate | Thumbprint | Purpose |
+|-------------|------------|---------|
+| Microsoft Root Certificate Authority 2011 | `8F43288AD272F3103B6FB1428485EA3014C0BCFE` | Signs all WU payloads since 2011 |
+| Microsoft ECC Root Certificate Authority 2017 | `999A64C37FF47D9FAB95F14769891460EEC4C3C5` | Used by newer endpoints and Azure Front Door |
+
+Searches by thumbprint first (most reliable), with fallback to Subject CN matching.
+
+| Condition | Verdict |
+|-----------|---------|
+| Found and not expired | `[OK]` -- shows expiry date and days remaining |
+| Found but expired | `[!!]` -- WU signature validation will fail |
+| Not found | `[!!]` -- certificate chain errors (`0x800B0109`, `0x80096004`) |
+
+##### Check 6 -- FIPS Mode
+
+Reads `HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\FIPSAlgorithmPolicy\Enabled`.
+
+| Condition | Verdict |
+|-----------|---------|
+| Not enabled (0 or absent) | `[OK]` |
+| Enabled = 1 | `[!]` -- can interfere with certain WU downloads and .NET crypto |
+
+#### Example Output (Healthy System)
+
+```
+=== TLS, Certificates & Time Check ===
+
+--- Schannel TLS 1.2 Configuration ---
+[OK]  TLS 1.2 Client
+       Subkey not present. OS defaults apply (TLS 1.2 enabled on Windows 10+).
+[OK]  TLS 1.2 Server
+       Subkey not present. OS defaults apply (TLS 1.2 enabled on Windows 10+).
+[!]   Legacy Protocols Still Active: TLS 1.0 (OS default)
+       These are not blocking Windows Update but are a security risk.
+       Consider disabling TLS 1.0 and SSL 3.0 when all applications support TLS 1.2+.
+
+--- .NET Framework TLS Defaults ---
+[OK]  .NET 4.x (64-bit)
+       SchUseStrongCrypto = 1, SystemDefaultTlsVersions = 1. Strong crypto active.
+[OK]  .NET 4.x (32-bit)
+       SchUseStrongCrypto = 1, SystemDefaultTlsVersions = 1. Strong crypto active.
+
+--- WinHTTP Secure Protocols ---
+[OK]  WinHTTP (64-bit)
+       DefaultSecureProtocols not configured. OS defaults apply (TLS 1.2 included on Win10+).
+[OK]  WinHTTP (32-bit)
+       DefaultSecureProtocols not configured. OS defaults apply (TLS 1.2 included on Win10+).
+
+--- System Clock & Time Source ---
+[OK]  System Clock
+       Time source: time.windows.com
+       Offset: +0.42 seconds. Clock is accurate.
+
+--- Microsoft Root Certificates ---
+[OK]  Microsoft Root Certificate Authority 2011
+       Present. Expires: 2036-03-22 (3650 days). Valid.
+[OK]  Microsoft ECC Root Certificate Authority 2017
+       Present. Expires: 2042-07-18 (5936 days). Valid.
+
+--- FIPS Mode ---
+[OK]  FIPS Algorithm Policy: Not enabled
+       FIPS mode is not active. No cryptographic restrictions.
+
+RESULT: No issues detected. TLS, certificates, and time appear healthy.
+
+NEXT:   If TLS 1.2 disabled       -> enable via registry (or run WU010 WUServicingRepair)
+        If clock drift > 5 min    -> fix with: w32tm /resync /force
+        If root certs missing     -> run: certutil -generateSSTFromWU roots.sst
+        If .NET strong crypto off -> set SchUseStrongCrypto = 1 at the flagged registry path
+        If all checks pass        -> run WU005 WUComponentHealth for component store analysis
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---------|------------|
+| WU services, disk space, reboot flags, history | WU001 WUQuickHealth |
+| GPO/MDM policy settings, WSUS config, deferral/pause | WU002 WUPolicyAudit |
+| DNS resolution, HTTPS connectivity, proxy, VPN, metered | WU003 WUNetworkCheck |
+| DISM, CBS.log, SFC, component store | WU005 WUComponentHealth |
+| Event log timeline | WU006 WUEventTimeline |
+| Service reset, cache clear | WU009 WUServiceReset |
+
+WU003 proves the TCP socket opens. WU004 proves the TLS handshake will succeed once the socket is open. WU003's `NEXT:` footer explicitly routes to WU004 for TLS/certificate issues.
+
+#### Version History
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial build. 6 check groups: Schannel TLS 1.2 Client/Server subkeys with legacy protocol detection (TLS 1.0, SSL 3.0), .NET Framework 4.x SchUseStrongCrypto and SystemDefaultTlsVersions for both 64-bit and WOW6432Node, WinHTTP DefaultSecureProtocols bitmask decoding (64-bit + 32-bit), system clock offset via `w32tm /stripchart` with fallback for unreachable NTP sources, Microsoft Root CA 2011 + ECC 2017 certificate validation with expiry check, FIPS algorithm policy detection. |
+
+---
+
 ## Defender & AV Suite
 
 ### DEF001 -- DEFStatusTriage
@@ -1096,6 +1294,198 @@ DEF001 does basic ghost detection (exe path check + signal gap). DEF003 does **d
 
 ---
 
+### DEF004 -- DEFRealtimeProtection
+
+**Version:** 1.0
+**Category:** DefenderEndpoint
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Focuses on cases where Defender is present and primary but Real-Time Protection won't stay enabled, or where the protection surface is degraded by misconfigured exclusions or ASR rules. DEF001 tells the tech "RTP is off." DEF004 tells them **who turned it off, at what policy level, whether Tamper Protection is blocking their fix, whether the engine process is healthy, whether exclusions are recklessly broad, and whether ASR rules are causing the compat friction that led someone to disable RTP in the first place**.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name DEFRealtimeProtection
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- Real-Time Protection State Deep Dive
+
+Queries `MSFT_MpComputerStatus` via CIM and reports 4 RTP sub-components individually:
+
+| Property | What It Shows |
+|----------|---------------|
+| `RealTimeProtectionEnabled` | Master RTP switch |
+| `OnAccessProtectionEnabled` | File-system read/write interception |
+| `BehaviorMonitorEnabled` | Heuristic/behavioral analysis |
+| `IoavProtectionEnabled` | IE/Edge download scanning |
+
+Also reports `RealTimeScanDirection` (0 = both, 1 = incoming only, 2 = outgoing only). Flags non-zero as `[!]`.
+
+**Source attribution:** When any sub-component is disabled, identifies the source by checking:
+
+1. **GPO:** `HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection` (`DisableRealtimeMonitoring`, `DisableBehaviorMonitoring`, `DisableOnAccessProtection`, `DisableIOAVProtection`)
+2. **MDM:** `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Defender` (`AllowRealtimeMonitoring`, `AllowBehaviorMonitoring`)
+3. **Local preference:** `MSFT_MpPreference.DisableRealtimeMonitoring`
+
+| Condition | Verdict |
+|-----------|---------|
+| All sub-components enabled | `[OK]` |
+| Any sub-component disabled | `[!!]` with source attribution |
+| Scan direction != 0 | `[!]` partial scanning |
+
+> **Key distinction from DEF001:** DEF001 reports `RealTimeProtectionEnabled` as a single boolean. DEF004 breaks RTP into 4 sub-components and identifies who disabled each one.
+
+##### Check 2 -- Tamper Protection Diagnostics
+
+Reads `HKLM:\SOFTWARE\Microsoft\Windows Defender\Features`:
+
+| Value | Meaning |
+|-------|---------|
+| `TamperProtection` = 5 | `[OK]` Actively enabled and locked |
+| `TamperProtection` = 4 | `[!]` Disabled (was previously enabled) |
+| `TamperProtection` = 0 / absent | `[!]` Not configured |
+| `TamperProtectionSource` = 5 | Protection from Microsoft signatures/cloud |
+| `TPExclusions` = 1 | Exclusions are tamper-protected (Intune-only) |
+| `ManagedDefenderProductType` = 6 | Intune standalone |
+| `ManagedDefenderProductType` = 7 | Co-managed (Intune + ConfigMgr) |
+
+**Cross-reference:** If RTP is disabled AND Tamper Protection is active (value = 5), reports `[i]` noting that RTP was disabled at a level above tamper protection (cloud policy or MDM). Local re-enable attempts will be silently reverted.
+
+> **Key distinction from DEF001:** DEF001 shows tamper protection as a one-line informational. DEF004 decodes the full registry values, reports the protection source, TPExclusions status, and management type.
+
+##### Check 3 -- MsMpEng.exe Process Health
+
+Queries `Get-Process -Name MsMpEng` for the antimalware engine process:
+
+| Metric | Threshold | Verdict |
+|--------|-----------|---------|
+| Process not found | -- | `[!!]` Engine not running |
+| Working set > 1 GB | > 1073741824 bytes | `[!!]` Possible scan hang or definition corruption |
+| Working set > 500 MB | -- | `[!]` Elevated, monitor |
+| Working set <= 500 MB | -- | `[OK]` Normal |
+| CPU > 30% sustained | 2-second sample | `[!!]` Possible scan loop |
+| CPU > 10% sustained | -- | `[!]` Elevated CPU |
+| CPU <= 10% | -- | `[OK]` Normal |
+
+**CPU measurement:** Two snapshots of `TotalProcessorTime` 2 seconds apart, calculated as `delta / (elapsed * logicalProcessorCount)`. Reports PID, memory, CPU%, and uptime.
+
+##### Check 4 -- Exclusion Audit
+
+Reads `MSFT_MpPreference` for `ExclusionPath`, `ExclusionExtension`, and `ExclusionProcess`. Reports counts and flags dangerous patterns:
+
+**Dangerous path patterns (11 rules):**
+
+| Pattern | Severity | Reason |
+|---------|----------|--------|
+| `C:\` or `D:\` (root drive) | `[!!]` | Entire volume excluded |
+| `C:\*` (root wildcard) | `[!!]` | All files on volume excluded |
+| `C:\Windows` | `[!!]` | System directory excluded |
+| `C:\Windows\Temp` | `[!!]` | Common malware staging location |
+| `C:\Windows\Prefetch` | `[!]` | Malware can stage here |
+| `C:\Program Files` | `[!]` | Broad, sometimes vendor-required |
+| `%APPDATA%` in paths | `[!]` | User-context variable trap |
+| `%LOCALAPPDATA%` in paths | `[!]` | User-context variable trap |
+| `%USERPROFILE%` in paths | `[!]` | User-context variable trap |
+| `*.*` at path level | `[!!]` | All files excluded |
+
+**User-context variable trap:** When `%APPDATA%` is used in an exclusion, it resolves to `C:\Windows\system32\config\systemprofile\AppData\Roaming` in SYSTEM context -- not the user's actual folder. The exclusion misses its target and dangerously excludes the system profile instead.
+
+**Dangerous extensions (10 types):** `.exe`, `.dll`, `.ps1`, `.bat`, `.cmd`, `.vbs`, `.js`, `.wsf`, `.scr`, `.com`
+
+##### Check 5 -- ASR (Attack Surface Reduction) Rules
+
+Reads `MSFT_MpPreference.AttackSurfaceReductionRules_Ids` and `AttackSurfaceReductionRules_Actions`. Maps 15 rule GUIDs to friendly names:
+
+**Action decode:** 0 = Disabled, 1 = Block, 2 = Audit, 6 = Warn
+
+**5 high-disruption rules** flagged with `[!]` when in Block mode:
+
+| GUID (short) | Rule | Why It's Disruptive |
+|---|---|---|
+| `d4f940ab` | Block Office apps from creating child processes | Breaks COM add-ins, ERP integrations |
+| `3b576869` | Block Office apps from creating executable content | Blocks legitimate deployment tools |
+| `92e97fa1` | Block Win32 API calls from Office macros | Breaks financial modeling, automation |
+| `9e6c4e1f` | Block credential stealing from LSASS | Conflicts with SSO and identity tools |
+| `5beb7efe` | Block obfuscated script execution | False positives on minified/compiled scripts |
+
+If high-disruption rules are in Block mode, notes that admins sometimes disable RTP as a workaround for ASR compat issues.
+
+#### Example Output (Healthy System)
+
+```
+=== Real-Time Protection & Tamper Protection Diagnostics ===
+
+--- Real-Time Protection State ---
+[OK]  Real-Time Protection: Enabled
+       All sub-components active: RTP, OnAccess, BehaviorMonitor, IOAV.
+       Scan direction: Both incoming and outgoing.
+
+--- Tamper Protection ---
+[OK]  Tamper Protection: Active (value = 5)
+       Source: Microsoft signatures/cloud defaults.
+       Defender settings are protected from local tampering.
+       Changes must come from Intune/MDE portal or cloud policy.
+[i]   Exclusion Protection: Not tamper-protected (TPExclusions = 0)
+       Local admins can add, modify, or remove AV exclusions.
+
+--- MsMpEng.exe Process Health ---
+[OK]  MsMpEng.exe (PID: 3456)
+       Memory: 245 MB working set. Normal.
+[OK]  CPU: 1.2% (measured over 2 seconds). Normal.
+[i]   Uptime: 4 day(s).
+
+--- Exclusion Audit ---
+[OK]  Path Exclusions: None configured.
+[OK]  Extension Exclusions: None configured.
+[OK]  Process Exclusions: None configured.
+
+--- ASR Rules ---
+[i]   ASR Rules: Not configured
+       No Attack Surface Reduction rules are active on this endpoint.
+       Consider enabling high-value rules in Audit mode first.
+
+RESULT: No issues detected. RTP and Tamper Protection appear healthy.
+
+NEXT:   If disabled by GPO         -> run DEF005 DEFPolicyConflict to identify the source
+        If tamper protection blocking changes -> changes must come from Intune cloud policy
+        If MsMpEng stuck           -> restart WinDefend service or run DEF008 DEFRemediation
+        If exclusions too broad    -> review with the security admin
+        If ASR compat issues       -> switch high-disruption rules from Block to Audit
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---------|------------|
+| Security Center bitmask, services, MDE sensor, signal gap | DEF001 DEFStatusTriage |
+| Definition age, update sources, CDN connectivity | DEF002 DEFDefinitionHealth |
+| Third-party AV conflict, ghost registrations, remnants | DEF003 DEFThirdPartyAV |
+| DisableAntiSpyware / DisableAntiVirus (engine-level kill) | DEF003 DEFThirdPartyAV |
+| Full GPO vs MDM policy side-by-side for all Defender settings | DEF005 DEFPolicyConflict |
+| Platform/engine version freshness | DEF006 DEFPlatformVersion |
+| Event log timeline, threat history | DEF007 DEFEventAnalysis |
+| Service reset, ghost cleanup, remediation | DEF008 DEFRemediation |
+
+**Overlap notes:**
+- DEF003 checks `DisableAntiSpyware`/`DisableAntiVirus` (engine-level kill). DEF004 checks `DisableRealtimeMonitoring`/`DisableBehaviorMonitoring`/`DisableOnAccessProtection`/`DisableIOAVProtection` (sub-feature disables). No overlap.
+- DEF001 shows tamper protection as a one-liner. DEF004 does the full registry decode with source, TPExclusions, and management type.
+- DEF005 does full side-by-side policy comparison across ~15 Defender settings. DEF004 only reads policy sources for RTP-related settings to answer "why is RTP off?"
+
+#### Version History
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial build. 5 check groups: RTP sub-component breakdown (RTP, OnAccess, BehaviorMonitor, IOAV) with GPO/MDM/local source attribution via policy registry reads, Tamper Protection registry decode (TamperProtection 5/4/0 values, TamperProtectionSource, TPExclusions, ManagedDefenderProductType) with RTP cross-reference, MsMpEng.exe process health (working set 500MB/1GB thresholds, CPU 2-second dual-sample with 10%/30% thresholds, PID and uptime), exclusion audit via MSFT_MpPreference (11 dangerous path regex patterns including root drives, system folders, user-context variable traps, plus 10 dangerous extension types), ASR rule inventory (15-rule GUID-to-name table, action decode, 5 high-disruption rules flagged in Block mode). |
+
+---
+
 ## BitLocker Suite
 
 ### BL001 -- BLStatusSnapshot
@@ -1630,6 +2020,191 @@ NEXT:   If Legacy BIOS        -> convert to UEFI (MBR2GPT.exe) -- requires plann
 | Version | Changes |
 |---------|---------|
 | 1.0 | Initial build. 6 check groups: boot mode detection (Confirm-SecureBootUEFI with bcdedit and registry fallbacks), Secure Boot status with registry cross-reference, disk partition scheme GPT/MBR via Get-Disk with Win32_DiskPartition CIM fallback, system partition validation (EFI partition existence, size thresholds at 100/260 MB, FAT32/NTFS format check), Modern Standby detection via powercfg /a + CsEnabled + PlatformAoAcOverride registry, OEM identification with Dell/Lenovo/HP quirk advisories (UEFI Bluetooth Stack, firmware PCR drift, Fast Boot loops) and VM detection (Hyper-V, VMware). |
+
+---
+
+### BL004 -- BLIntunePolicy
+
+**Version:** 1.0
+**Category:** BitLocker
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Bridges the gap between what Intune expects and what the local machine is configured for regarding BitLocker. BL001 tells the tech "this drive is not encrypted." BL002 confirms "the TPM is healthy." BL003 confirms "the hardware prerequisites are met." BL004 answers the next question: **Has the machine actually received the BitLocker policy from Intune, and is the policy internally consistent with the hardware?**
+
+A machine can pass every hardware check and still fail BitLocker encryption because it's not enrolled in Intune, the BitLocker CSP payload never arrived, the policy demands a cipher the hardware doesn't support, or the policy requires silent encryption but also demands a TPM+PIN (contradictory).
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name BLIntunePolicy
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- MDM Enrollment Status via dsregcmd /status
+
+Executes `dsregcmd.exe /status` and parses the structured text output with regex for key enrollment fields:
+
+| Field | Section | What It Tells Us |
+|-------|---------|------------------|
+| `AzureAdJoined` | Device State | Is the machine joined to Entra ID? |
+| `DomainJoined` | Device State | Is the machine joined to on-prem AD? |
+| `WorkplaceJoined` | User State | Is this a BYOD registration? |
+| `MdmUrl` | Tenant Details | Is there an MDM endpoint configured? |
+| `DeviceId` | Device State | Entra ID device object GUID (informational) |
+
+**5 derived join states:**
+
+| AzureAdJoined | DomainJoined | WorkplaceJoined | State |
+|---|---|---|---|
+| YES | NO | - | Entra ID Joined (cloud-native) |
+| YES | YES | - | Hybrid Entra ID Joined |
+| NO | YES | - | On-prem AD only (no cloud join) |
+| NO | NO | YES | Workplace Joined (BYOD) |
+| NO | NO | NO | Not joined to anything |
+
+| Condition | Verdict |
+|-----------|---------|
+| AzureAdJoined + MdmUrl present | `[OK]` Enrolled and MDM URL configured |
+| AzureAdJoined + MdmUrl empty | `[!!]` Joined but no MDM URL -- license or scope issue |
+| Not Entra joined | `[!!]` Intune policies cannot be delivered |
+| Workplace Joined only | `[!]` BYOD -- no device-level BitLocker policies |
+| Hybrid joined | `[i]` Note about dual policy delivery (GPO + MDM) |
+
+##### Check 2 -- BitLocker CSP Settings from Registry
+
+Reads `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\BitLocker`:
+
+| Registry Value | What It Controls | Decode |
+|---|---|---|
+| `RequireDeviceEncryption` | Master Intune BitLocker switch | 1 = Required |
+| `EncryptionMethodByDriveType` | Cipher strength (XML encoded) | Parsed for OS/Fixed/Removable cipher integers |
+| `AllowStandardUserEncryption` | Bypass UAC for standard users | 1 = Allowed (needed for Autopilot) |
+| `AllowWarningForOtherDiskEncryption` | Third-party encryption warning | 0 = Suppressed (needed for silent) |
+| `SystemDrivesRequireStartupAuthentication` | Pre-boot auth config (XML) | TPM-only vs TPM+PIN detection |
+
+**Cipher integer mapping:**
+
+| Integer | Algorithm |
+|---------|-----------|
+| 3 | AES-CBC 128-bit |
+| 4 | AES-CBC 256-bit |
+| 6 | XTS-AES 128-bit |
+| 7 | XTS-AES 256-bit |
+
+If the registry path doesn't exist, reports `[!]` -- Intune has not delivered a BitLocker policy.
+
+##### Check 3 -- Policy vs Hardware Comparison
+
+Cross-references CSP settings from Check 2 against known hardware capabilities:
+
+| Scenario | Verdict |
+|----------|---------|
+| Policy demands XTS-AES but OS build < 10586 (pre-1511) | `[!!]` XTS not supported |
+| Policy requires TPM+PIN but silent encryption expected | `[!!]` Silent impossible |
+| AllowWarningForOtherDiskEncryption not suppressed | `[!]` Breaks silent provisioning |
+| Policy cipher differs from currently encrypted volume | `[!]` Full decrypt/re-encrypt required |
+| All settings compatible | `[OK]` Silent path is clear |
+
+> **Note:** Only reads current encryption method for narrow comparison -- does not duplicate BL001's full volume status.
+
+##### Check 4 -- Intune Management Extension Logs
+
+**Log location:** `C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log`
+
+- Reads last 5000 lines of the flat file
+- Searches for `BitLocker` keyword (case-insensitive)
+- Displays last 20 matching entries with timestamp and message
+- Parses IME log format: `<![LOG[message]LOG]!><time="" date="" ...>`
+- If no matches: `[i]` no BitLocker activity in log
+- If log missing: `[!]` IME may not be installed
+
+##### Check 5 -- MDM Enrollment Health
+
+**Sub-check 5a: EnterpriseMgmt Scheduled Tasks**
+
+Queries `Get-ScheduledTask -TaskPath '\Microsoft\Windows\EnterpriseMgmt\*'` for MDM sync tasks. Reports task name, last run time, and last result code. Flags non-zero results as failures.
+
+**Sub-check 5b: MDM Enrollment Certificate**
+
+Searches `Cert:\LocalMachine\My` for certificates issued by `SC_Online_Issuing` or `Microsoft Intune MDM Device CA`. Reports issuer, expiration date, and days remaining. Flags expired certificates as `[!!]` and certificates expiring within 30 days as `[!]`.
+
+#### Example Output (Healthy Enrolled System)
+
+```
+=== Intune Policy & MDM Enrollment Check ===
+
+--- MDM Enrollment Status ---
+[OK]  Entra ID Joined (cloud-native)
+       AzureAdJoined: YES. DomainJoined: NO.
+[OK]  MDM URL Configured
+       MdmUrl: https://enrollment.manage.microsoft.com/enrollmentserver/discovery.svc
+       Intune enrollment channel is present.
+[i]   DeviceId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+
+--- BitLocker CSP Policy ---
+[OK]  RequireDeviceEncryption: 1 (Required)
+       Intune is requiring BitLocker encryption on this device.
+[i]   Encryption Method: XTS-AES 256-bit (OS), XTS-AES 256-bit (Fixed), AES-CBC 128-bit (Removable)
+[OK]  AllowStandardUserEncryption: 1 (Allowed)
+[OK]  AllowWarningForOtherDiskEncryption: 0 (Suppressed -- silent encryption enabled)
+[OK]  Startup Authentication: TPM-only (silent compatible)
+
+--- Policy vs Hardware ---
+[OK]  Cipher Compatibility
+       XTS-AES is supported on this OS build (22621).
+[OK]  Silent Encryption Coherence
+       Policy settings are compatible with silent encryption path.
+
+--- Intune Management Extension Logs ---
+[i]   BitLocker-related IME entries: 3 found. Showing last 3.
+       [04-02-2026 14:22:15] BitLocker CSP policy applied successfully
+       [04-02-2026 14:22:14] RequireDeviceEncryption set to 1
+       [04-02-2026 14:21:58] Processing BitLocker configuration policy
+
+--- MDM Enrollment Health ---
+[OK]  MDM Sync Tasks: 2 found
+       Task: Schedule #1 created by OMA-DM client
+       Last run: 2026-04-03 12:15. Result: 0x0 (Success).
+[OK]  MDM Device Certificate
+       Issuer: SC_Online_Issuing. Expires: 2027-04-03. Valid (365 days remaining).
+
+RESULT: No issues detected. Intune BitLocker policy is present and coherent.
+
+NEXT:   If not MDM enrolled       -> re-enroll the device in Intune
+        If policy not received    -> force Intune sync and wait 15 minutes
+        If policy conflicts       -> run BL006 BLPolicyConflict to check GPO vs MDM
+        If policy looks correct   -> run BL005 BLEscrowCheck to verify key escrow
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---------|------------|
+| Volume encryption status, ghost state, key protectors | BL001 BLStatusSnapshot |
+| TPM presence, version, firmware, lockout, attestation | BL002 BLTpmHealth |
+| UEFI/BIOS, Secure Boot, GPT/MBR, system partition, OEM quirks | BL003 BLHardwarePrereqs |
+| Recovery key escrow, AAD connectivity, escrow endpoints | BL005 BLEscrowCheck |
+| GPO vs MDM BitLocker policy conflict (FVE keys) | BL006 BLPolicyConflict |
+| Full event log timeline, HRESULT translation | BL007 BLEventAnalysis |
+| WinRE status, manage-bde diagnostics, readiness dry run | BL008 BLReadinessCheck |
+| TPM remediation, key protector cleanup | BL009 BLTpmRemediation |
+
+**Overlap notes:**
+- BL004 reads `PolicyManager\current\device\BitLocker` (MDM side). BL006 compares `Policies\Microsoft\FVE` (GPO+MDM merged enforcement). No overlap.
+- BL004 parses `dsregcmd` for enrollment status. BL005 dives deeper into device registration (PRT tokens, device certificates for AAD trust, escrow endpoints). BL004 is "are we enrolled?" -- BL005 is "can we escrow?"
+- BL004 reads current encryption method for narrow cipher-mismatch comparison. BL001 does the full volume status report. No overlap.
+
+#### Version History
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial build. 5 check groups: dsregcmd /status parsing for MDM enrollment (AzureAdJoined, DomainJoined, WorkplaceJoined, MdmUrl, DeviceId with 5 derived join states), BitLocker CSP registry decode at PolicyManager/current/device/BitLocker (RequireDeviceEncryption, EncryptionMethodByDriveType XML regex for OS/Fixed/Removable cipher integers mapped to 4 algorithms, AllowStandardUserEncryption, AllowWarningForOtherDiskEncryption, SystemDrivesRequireStartupAuthentication with TPM+PIN detection via UseTPMPIN/UseTPMKeyPIN XML parsing), policy-hardware cross-reference (XTS vs OS build 10586 threshold, TPM+PIN vs silent, AllowWarning coherence, cipher mismatch with Get-BitLockerVolume), IME log scan (last 5000 lines of IntuneManagementExtension.log, BitLocker keyword search, 20 most recent matches with timestamp extraction), MDM enrollment health (EnterpriseMgmt scheduled tasks with last run/result, MDM device certificate from Cert:\\LocalMachine\\My with 30-day expiration warning). |
 
 ---
 

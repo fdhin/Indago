@@ -161,15 +161,18 @@ Scriptlets are pre-built PowerShell tasks stored in `Scriptlets/ScriptletCatalog
 | WU001 | `WUQuickHealth` | WindowsUpdate | System | 30-second triage: services, disk space, pending reboots, recent failures with HRESULT translation, cache size, and last update date |
 | WU002 | `WUPolicyAudit` | WindowsUpdate | System | GPO/MDM/WSUS policy detection, ring assignment, deferral days, delivery optimization, and policy conflict identification |
 | WU003 | `WUNetworkCheck` | WindowsUpdate | System | DNS resolution, HTTPS connectivity, WinHTTP proxy, system proxy, PAC/WPAD detection, VPN adapter detection, and metered connection status |
+| WU004 | `WUTlsCertCheck` | WindowsUpdate | System | TLS 1.2 Schannel/WinHTTP config, .NET Framework strong crypto, system clock drift via w32tm, Microsoft root certificate validation, and FIPS mode |
 | DEF001 | `DEFStatusTriage` | DefenderEndpoint | System | Security Center AV bitmask decoding, Defender mode, RTP, definitions, services, MDE sensor, and signal gap analysis |
 | DEF002 | `DEFDefinitionHealth` | DefenderEndpoint | System | Definition update source tracing, staleness analysis, fallback chain validation, MMPC connectivity, and scheduled update task health |
 | DEF003 | `DEFThirdPartyAV` | DefenderEndpoint | System | Third-party AV conflict detection, ghost Security Center registrations, 10-vendor remnant scan (registry, services, drivers), and DisableAntiSpyware/DisableAntiVirus policy override detection |
+| DEF004 | `DEFRealtimeProtection` | DefenderEndpoint | System | RTP sub-component breakdown with source attribution, Tamper Protection diagnostics, MsMpEng.exe process health, exclusion audit with dangerous pattern detection, and ASR rule inventory |
 | APP001 | `WingetUpgradeSystemSilent` | Applications | System | Runs winget upgrade --all as SYSTEM to silently update all machine-wide installed applications |
 | APP002 | `WingetUpgradeUserApps` | Applications | User | Runs winget upgrade --all --scope user as the logged-on user to update user-scoped applications |
 | INT001 | `IntuneForceComplianceCheck` | Intune | System | Triggers a forced Intune compliance evaluation via the Intune Management Extension agent |
 | BL001 | `BLStatusSnapshot` | BitLocker | System | Volume encryption status with ghost-state detection, OS drive letter validation, last BitLocker event, and BDESVC health |
 | BL002 | `BLTpmHealth` | BitLocker | System | TPM presence, readiness, version, firmware vulnerability scan (ROCA, TPM-FAIL), lockout state, and attestation readiness |
 | BL003 | `BLHardwarePrereqs` | BitLocker | System | UEFI vs Legacy BIOS boot mode, Secure Boot status, GPT vs MBR partition scheme, system partition validation, Modern Standby detection, and OEM quirk flagging (Dell, Lenovo, HP) |
+| BL004 | `BLIntunePolicy` | BitLocker | System | MDM enrollment status via dsregcmd (5 join states), BitLocker CSP registry decode (RequireDeviceEncryption, EncryptionMethod XML, AllowStandardUserEncryption, AllowWarning, StartupAuthentication), policy-hardware cross-reference, IME log scan, and MDM enrollment health (sync tasks + device certificate) |
 | FW001 | `FWStatusTriage` | Firewall | System | Firewall profile status with active adapter correlation, Security Center cross-reference for ghost detection, and MpsSvc health |
 | FW002 | `FWPolicyConflict` | Firewall | System | Side-by-side Local/GPO/MDM firewall policy comparison, EnableFirewall=0 detection, MDMWinsOverGP validation, and orphaned GPO detection |
 | FW003 | `FWThirdParty` | Firewall | System | Security Center deep enumeration with productState bitmask decode, 14-vendor remnant scan, "Managed by Vendor" state detection, ghost registration cross-reference analysis, and WFP filter driver detection |
