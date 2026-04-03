@@ -126,6 +126,8 @@ Get-IndagoList [-Category <string>]
 Get-IndagoList
 Get-IndagoList -Category WindowsUpdate
 Get-IndagoList -Category DefenderEndpoint
+Get-IndagoList -Category BitLocker
+Get-IndagoList -Category Firewall
 ```
 
 ### `Get-IndagoHelp`
@@ -157,12 +159,16 @@ Scriptlets are pre-built PowerShell tasks stored in `Scriptlets/ScriptletCatalog
 | Id | Name | Category | Context | Description |
 |---|---|---|---|---|
 | WU001 | `WUQuickHealth` | WindowsUpdate | System | 30-second triage: services, disk space, pending reboots, recent failures with HRESULT translation, cache size, and last update date |
+| WU002 | `WUPolicyAudit` | WindowsUpdate | System | GPO/MDM/WSUS policy detection, ring assignment, deferral days, delivery optimization, and policy conflict identification |
 | DEF001 | `DEFStatusTriage` | DefenderEndpoint | System | Security Center AV bitmask decoding, Defender mode, RTP, definitions, services, MDE sensor, and signal gap analysis |
+| DEF002 | `DEFDefinitionHealth` | DefenderEndpoint | System | Definition update source tracing, staleness analysis, fallback chain validation, MMPC connectivity, and scheduled update task health |
 | APP001 | `WingetUpgradeSystemSilent` | Applications | System | Runs winget upgrade --all as SYSTEM to silently update all machine-wide installed applications |
 | APP002 | `WingetUpgradeUserApps` | Applications | User | Runs winget upgrade --all --scope user as the logged-on user to update user-scoped applications |
 | INT001 | `IntuneForceComplianceCheck` | Intune | System | Triggers a forced Intune compliance evaluation via the Intune Management Extension agent |
 | BL001 | `BLStatusSnapshot` | BitLocker | System | Volume encryption status with ghost-state detection, OS drive letter validation, last BitLocker event, and BDESVC health |
+| BL002 | `BLTpmHealth` | BitLocker | System | TPM presence, readiness, version, firmware vulnerability scan (ROCA, TPM-FAIL), lockout state, and attestation readiness |
 | FW001 | `FWStatusTriage` | Firewall | System | Firewall profile status with active adapter correlation, Security Center cross-reference for ghost detection, and MpsSvc health |
+| FW002 | `FWPolicyConflict` | Firewall | System | Side-by-side Local/GPO/MDM firewall policy comparison, EnableFirewall=0 detection, MDMWinsOverGP validation, and orphaned GPO detection |
 
 ### Execution Contexts
 
