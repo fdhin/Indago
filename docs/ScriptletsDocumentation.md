@@ -3619,3 +3619,232 @@ NEXT:   If BFE or RpcSs stopped     -> restart the dependency chain (run FW006 F
 | Version | Changes |
 |---------|---------|
 | 1.0 | Initial build. 5 check groups: service dependency chain (RpcSs/BFE/MpsSvc) with Get-Service status, StartType, and Win32_Service ExitCode validation plus cascade failure explanation, WFP state check via netsh wfp show state to temp file with responsiveness verification, firewall log configuration audit via Get-NetFirewallProfile (LogBlocked/LogAllowed per profile, log file existence/size with 4MB threshold, tail 50 lines for DROP and INFO-EVENTS-LOST detection), MpsSvc SDDL validation via sc.exe sdshow with SY/BA ACE presence check for malware tampering detection, firewall event log scan (WFAS log ID 2003, System log IDs 5027/5028/5030/5035/5037, last 24h window). `NEXT:` footer routing to FW005/FW006. |
+
+---
+
+### FW005 -- FWRuleDiagnostic
+
+**Version:** 1.0
+**Category:** Firewall
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+When the firewall service runs but behaves erratically -- slow boot, Security Center timeout reporting "firewall off", or Intune non-compliance despite all policies and services looking correct -- the root cause is often **extreme rule bloat**. Thousands of accumulated, orphaned, or duplicate firewall rules overwhelm the `MpsSvc` service's ability to parse and load the rule set into the Windows Filtering Platform (WFP) within acceptable timeframes.
+
+FW001-FW004 systematically eliminate the obvious causes: profile state, policy conflicts, third-party products, and service health. FW005 is the next-level diagnostic: **"The service is running, policies are correct, no third-party interference -- so why is the firewall choking?"** The answer is usually buried in the rule store itself.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name FWRuleDiagnostic
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- Total Rule Count
+
+Counts all firewall rules using CIM (`MSFT_NetFirewallRule` in `ROOT/StandardCimv2`) with a 30-second timeout. If CIM hangs or fails (common on severely bloated systems where `Get-NetFirewallRule` takes 10+ minutes), falls back to counting registry values at `HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules`.
+
+> **CIM vs Registry note:** CIM counts all rules including GPO-deployed and MDM-deployed rules. The registry fallback only counts local rules, which may undercount the total. The source is reported in the output.
+
+| Count | Verdict | Meaning |
+|-------|---------|---------|
+| < 500 | `[OK]` | Healthy |
+| 500-3000 | `[i]` | Normal for managed environments |
+| 3001-10000 | `[!]` | Elevated, worth investigating |
+| > 10000 | `[!!]` | Extreme bloat, likely causing MpsSvc startup delays and Security Center timeout |
+
+##### Check 2 -- Rules Per Profile
+
+Parses the `Profile=` field from each registry rule string to count rules targeting each firewall profile (Domain, Private, Public, All).
+
+A disproportionate concentration in one profile -- e.g., 8000 rules targeting Public but only 200 targeting Domain -- suggests user-level application rule sprawl (the `%LocalAppData%` phenomenon).
+
+| Condition | Verdict |
+|-----------|---------|
+| Balanced distribution | `[OK]` |
+| One profile has >70% of all rules | `[!]` Disproportionate concentration |
+| Any profile has >5000 rules | `[!]` Likely auto-generated application rules |
+
+##### Check 3 -- Duplicate Rule Detection
+
+Identifies functionally identical rules using a 6-field fingerprint: **Name + Direction + Action + Program + Protocol + LocalPort**.
+
+**Method:** Parses each rule's pipe-delimited registry string to extract the 6 fields. Builds a hash-based fingerprint and groups rules. Two rules with the same fingerprint are true duplicates regardless of their GUID/value name.
+
+Reports:
+- Total duplicate groups (unique fingerprints that appear more than once)
+- Total redundant rules (individual copies beyond the first)
+- Top 5 worst offenders (rule name + copy count)
+
+| Condition | Verdict |
+|-----------|---------|
+| No duplicates | `[OK]` |
+| < 50 duplicate groups | `[i]` Minor, common in managed environments |
+| 50-500 duplicate groups | `[!]` Significant bloat |
+| > 500 duplicate groups | `[!!]` Extreme duplication, likely runaway auto-rule generator |
+
+##### Check 4 -- Invalid Application Paths (Orphaned Rules)
+
+Rules with `App=` (Program property) pointing to executables that no longer exist on disk. These cause parsing errors during MpsSvc startup and contribute to boot-time bloat.
+
+**The `%LocalAppData%` problem:** Running as SYSTEM, `%LocalAppData%` resolves to `C:\Windows\System32\config\systemprofile\AppData\Local` -- useless for validating user-level application rules. The script handles this by:
+1. Detecting rules containing `%LocalAppData%`, `%APPDATA%`, or `%USERPROFILE%`
+2. Enumerating all user profile directories from `C:\Users\*`
+3. Reconstructing the full path per user profile
+4. Testing if the executable exists in ANY user profile
+5. Also handles hardcoded user paths (`C:\Users\JohnDoe\AppData\Local\...`) the same way
+6. System variables (`%ProgramFiles%`, `%SystemRoot%`, etc.) are expanded normally
+
+Reports:
+- Total orphaned rule count
+- Percentage of app-path rules that are orphaned
+- Top 5 example paths
+
+| Condition | Verdict |
+|-----------|---------|
+| No orphaned rules | `[OK]` |
+| < 50 orphaned | `[i]` Minor, routine cleanup |
+| 50-500 orphaned | `[!]` Significant bloat |
+| > 500 orphaned | `[!!]` Major cause of MpsSvc startup delay |
+
+##### Check 5 -- Firewall Rule Store Size
+
+Measures the aggregate byte size of all registry values at `FirewallRules` (Unicode REG_SZ, 2 bytes per character).
+
+The combined firewall and IPsec rule configuration that `MpsSvc` must load into memory has a hard limit of approximately **14 MB**. Beyond this, the service fails to compile the rules into WFP kernel filters.
+
+| Size | Verdict | Meaning |
+|------|---------|---------|
+| < 2 MB | `[OK]` | Normal |
+| 2-5 MB | `[i]` | Growing, monitor |
+| 5-10 MB | `[!]` | Large, may cause startup delays |
+| > 10 MB | `[!!]` | Approaching MpsSvc payload limit |
+
+##### Check 6 -- Enabled vs Disabled Ratio
+
+Windows ships hundreds of disabled rules by default (Remote Desktop, file sharing, etc.). A large disabled count is normal. But thousands of **enabled** custom rules is a red flag -- every enabled rule is evaluated per-packet by WFP.
+
+| Condition | Verdict |
+|-----------|---------|
+| < 500 enabled | `[OK]` |
+| 500-2000 enabled | `[i]` Normal for managed environments |
+| 2001-5000 enabled | `[!]` Heavy, may slow per-packet evaluation |
+| > 5000 enabled | `[!!]` Extreme, likely auto-generated |
+
+##### Check 7 -- Rule Corruption Events (Event ID 4953)
+
+Queries the Security event log for Event ID 4953 in the last 7 days. This event is logged when Windows Firewall ignores a rule because it could not be parsed -- a direct indicator of a corrupted rule string in the registry.
+
+| Condition | Verdict |
+|-----------|---------|
+| No Event 4953 in 7 days | `[OK]` No rule corruption detected |
+| Event 4953 found | `[!!]` Rule corruption confirmed, with event count and last occurrence |
+
+> **Key distinction from FW004:** FW004 Check 5 covers service failure events (5027, 5028, 5030, 5035, 5037) and profile application events (2003). FW005 Check 7 covers Event 4953, which is specifically a rule-level corruption event -- different scope.
+
+#### Example Output (Healthy System)
+
+```
+=== Rule Corruption & Bloat Diagnostics ===
+
+[OK]  Total Rule Count
+       287 rules (source: CIM). Healthy rule count.
+[OK]  Rules Per Profile
+       Domain: 45, Private: 32, Public: 58, All: 152 (of 287 local). Distribution is balanced.
+[OK]  Duplicate Rules
+       No duplicate rules found. Each rule has a unique fingerprint (Name+Direction+Action+Program+Protocol+Port).
+[OK]  Orphaned Application Paths
+       All 94 rules with application paths point to valid executables.
+[OK]  Rule Store Size
+       0.38 MB. Rule store size is healthy.
+[OK]  Enabled vs Disabled Rules
+       142 enabled, 145 disabled (of 287 local). Healthy.
+[OK]  Rule Corruption Events (4953)
+       No Event 4953 (unparseable rule) in last 7 days. No rule corruption detected.
+
+RESULT: No rule bloat or corruption issues detected.
+
+NEXT:   If rule count extreme        -> consider a firewall reset via FW006 FWRemediation
+        If many duplicates           -> clean up via policy management tool or reset
+        If orphaned paths            -> remove stale rules manually or via script
+        If Event 4953 detected       -> identify the malformed rule from event detail
+        If all clean                 -> the issue is likely policy or service-level (FW001-FW004)
+```
+
+#### Example Output (Bloated System)
+
+```
+=== Rule Corruption & Bloat Diagnostics ===
+
+[!!]  Total Rule Count
+       14327 rules (source: Registry (local rules only)). EXTREME BLOAT -- likely causing
+       MpsSvc startup delays, Security Center timeout, and Intune non-compliance.
+       Consider a firewall reset via FW006 FWRemediation.
+[!]   Rules Per Profile
+       Domain: 102, Private: 89, Public: 12841, All: 1295 (of 14327 local).
+       One profile has >70% of all rules -- disproportionate concentration.
+[!!]  Duplicate Rules
+       1247 duplicate groups, 11983 redundant rules.
+       Top: Google Chrome (342x), Microsoft Teams (287x), Spotify (198x),
+       WebexHost (156x), Docker Desktop (112x).
+       Extreme duplication -- likely runaway auto-rule generator. Consider reset via FW006.
+[!!]  Orphaned Application Paths
+       8234 of 12156 rules point to missing executables (67.7%).
+       Major cause of MpsSvc startup delay. These cause parsing errors on every boot.
+       - C:\Users\jdoe\AppData\Local\Google\Chrome\Application\chrome.exe
+       - C:\Users\deleteduser\AppData\Local\Spotify\spotify.exe
+       - C:\Users\temp01\AppData\Local\Programs\Microsoft VS Code\Code.exe
+[!!]  Rule Store Size
+       11.73 MB. Approaching MpsSvc payload limit (~14 MB). Service may fail to compile
+       rules into WFP. Reset via FW006.
+[!!]  Enabled vs Disabled Rules
+       11489 enabled, 2838 disabled (of 14327 local). Extreme -- every enabled rule
+       is evaluated per-packet.
+[!!]  Rule Corruption Events (4953)
+       47 events in last 7 days. A rule was ignored because it could not be parsed.
+       Last: 2026-04-03 09:15.
+
+RESULT: 6 issue(s) and 1 warning(s) found. Review items marked [!!] above.
+
+NEXT:   If rule count extreme        -> consider a firewall reset via FW006 FWRemediation
+        If many duplicates           -> clean up via policy management tool or reset
+        If orphaned paths            -> remove stale rules manually or via script
+        If Event 4953 detected       -> identify the malformed rule from event detail
+        If all clean                 -> the issue is likely policy or service-level (FW001-FW004)
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---------|------------|
+| Firewall profile enabled/disabled state | FW001 FWStatusTriage |
+| Active adapter correlation | FW001 |
+| Security Center cross-reference | FW001 |
+| MpsSvc service health | FW001 |
+| GPO registry reads (`EnableFirewall`) | FW002 FWPolicyConflict |
+| MDM policy reads | FW002 |
+| MDMWinsOverGP conflict resolution | FW002 |
+| Orphaned GPO detection | FW002 |
+| Third-party firewall detection, ghost analysis | FW003 FWThirdParty |
+| WFP callout driver detection (fltmc) | FW003 |
+| BFE/RpcSs dependency chain | FW004 FWServiceHealth |
+| WFP infrastructure state | FW004 |
+| Firewall log analysis | FW004 |
+| Service SDDL validation | FW004 |
+| Service failure events (5027, 5028, 5030, 5035, 5037), profile events (2003) | FW004 |
+| Profile re-enable, ghost cleanup, service restart, firewall reset | FW006 FWRemediation |
+
+**Overlap notes:**
+- FW004 Check 5 covers service failure events (5027/5028/5030/5035/5037) and profile events (2003). FW005 Check 7 covers Event 4953 (rule ignored because unparseable). Different event IDs, different diagnostic purpose.
+- FW001 Check 1 reads `Get-NetFirewallProfile` for profile enabled/disabled state. FW005 Check 2 counts rules per profile from registry. Different question (is it on? vs how many rules?).
+
+#### Version History
+
+| Version | Changes |
+|---------|---------|
+| 1.0 | Initial build. 7 check groups: total rule count via CIM MSFT_NetFirewallRule with 30-second timeout and registry fallback (thresholds: 500/3000/10000), per-profile distribution from registry pipe-delimited Profile= field with 70% concentration and 5000 threshold flags, 6-field duplicate detection (Name+Direction+Action+Program+Protocol+LocalPort) via hash-based fingerprinting with top-5 offender reporting, orphaned application path validation with SYSTEM-context %LocalAppData%/%APPDATA%/%USERPROFILE% expansion against C:\Users\* profiles plus absolute user path validation, registry store size measurement (Unicode byte calculation) against 14 MB MpsSvc payload limit (thresholds: 2/5/10 MB), enabled vs disabled ratio from Active= field (thresholds: 500/2000/5000), Event ID 4953 (rule ignored because unparseable) from Security log 7-day window. `NEXT:` footer routing to FW006. |
