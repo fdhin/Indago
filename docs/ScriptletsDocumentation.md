@@ -5028,6 +5028,957 @@ NEXT:   If conflicts found         -> set MDMWinsOverGP=1, or remove conflicting
 
 ---
 
+
+### BL007 -- BLEventAnalysis
+
+**Version:** 1.0
+**Category:** BitLocker
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Builds a chronological timeline of what happened during the last BitLocker encryption attempt(s). Translates error codes into actionable explanations with scriptlet routing.
+
+This is the "what happened and when" diagnostic for BitLocker. After BL001-BL006 answer "what is the current state?", BL007 explains *when* and *why* it happened.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name BLEventAnalysis
+Invoke-Indago -Name BLEventAnalysis -Param1 "14"   # last 14 days
+```
+
+**Parameters:**
+
+| Parameter | Description | Default |
+|---|---|---|
+| Param1 | DaysBack -- number of days of event history to pull (1-90) | 7 |
+
+#### What It Checks
+
+##### Data Source
+
+BL007 reads **event logs only** via `Get-WinEvent` with optimized `-FilterXPath` queries. It does NOT query Get-BitLockerVolume, Win32_EncryptableVolume, Get-Tpm, Win32_Tpm, dsregcmd, FVE registry, or PolicyManager registry -- those are the domain of BL001-BL006.
+
+| Log Channel | Purpose |
+|---|---|
+| `Microsoft-Windows-BitLocker-API/Management` | Encryption lifecycle, key protectors, escrow, policy enforcement |
+| `Microsoft-Windows-BitLocker-API/Operational` | Low-level API errors and driver failures |
+| `System` (Sources: TPM, TPM-WMI, Microsoft-Windows-TPM-WMI) | Hardware-layer TPM events |
+| `Microsoft-Windows-BitLocker-DrivePreparationTool/Operational` | Partition preparation (if available) |
+
+##### Section 1: Encryption Lifecycle Timeline
+
+Events from `Microsoft-Windows-BitLocker-API/Management`:
+
+| Event ID | Meaning | Verdict |
+|---|---|---|
+| 796 | Hardware assessment passed (software encryption) | `[OK]` |
+| 768 | Encryption commenced with cipher detail | `[i]` |
+| 775 | Key protector generated with type | `[OK]` |
+| 817 | Volume master key sealed to TPM (PCR values) | `[OK]` |
+| 834/835 | TCG log invalid -- Secure Boot integrity failure | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL007",
+    "Name": "BLEventAnalysis",
+    "DisplayName": "BitLocker Event Log & Error Code Analysis",
+    "Category": "BitLocker",
+    "Description": "Builds a chronological timeline of BitLocker encryption lifecycle events and translates error codes into actionable explanations. Queries 3 log channels: BitLocker-API/Management (encryption start/complete, key protector generation, TPM sealing, escrow success/fail, silent encryption failure, WinRE/TPM blockers, rollback, suspension, decryption), BitLocker-API/Operational (low-level API errors and driver failures), and System log (TPM/TPM-WMI hardware events including dictionary attack lockout). Optionally queries DrivePreparationTool/Operational if available. 11-entry embedded HRESULT translation map with scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["bitlocker", "event-log", "timeline", "error-codes", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query Get-BitLockerVolume, Win32_EncryptableVolume, Get-Tpm, Win32_Tpm, dsregcmd, FVE registry, or PolicyManager registry (those are BL001-BL006 domain). 4 log channels: (1) BitLocker-API/Management: Event 768 encryption commenced, 770/771 decryption start/complete, 773 protection suspended, 775 key protector generated, 778 encryption rolled back, 796 hardware assessment passed, 817 TPM seal, 834/835 TCG log invalid, 845 escrow success (defers to BL005), 846 escrow failed (defers to BL005), 851 silent encryption failed, 853 TPM not found, 854 WinRE missing, 858 key rotation failed (defers to BL005). (2) BitLocker-API/Operational: all events with level-based classification. (3) System log filtered to TPM/TPM-WMI/Microsoft-Windows-TPM-WMI sources, including Event 1026 dictionary attack lockout. (4) DrivePreparationTool/Operational with graceful fallback. Events merged into chronological timeline (most recent first, up to 40 shown). Context extraction for key events (cipher, protector type, PCR values, suspension reason). HRESULT extraction via regex with 11-entry translation map (0x80310059 policy conflict, 0x803100B4 eDrive, 0x80284008 TBS down, 0x803100CC PIN policy, 0x80070490 system partition, 0x80310000 locked volume, 0x80280001 TPM auth fail, 0x80072F9A Entra escrow, 0x80310030 TPM not found, 0x80310019 partition type, 0x8031006E busy). Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl007 = [e for e in verify if e['Id'] == 'BL007']
+    if bl007:
+        print(f"BL007 found. Name={bl007[0]['Name']}, Script={len(bl007[0]['Script'])} chars")
+    else:
+        print("ERROR: BL007 not found after insertion")
+PYEOF]` |
+| 845 | Recovery key escrowed to Entra ID | `[OK]` (detail in BL005) |
+| 846 | Escrow to Entra ID failed | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL007",
+    "Name": "BLEventAnalysis",
+    "DisplayName": "BitLocker Event Log & Error Code Analysis",
+    "Category": "BitLocker",
+    "Description": "Builds a chronological timeline of BitLocker encryption lifecycle events and translates error codes into actionable explanations. Queries 3 log channels: BitLocker-API/Management (encryption start/complete, key protector generation, TPM sealing, escrow success/fail, silent encryption failure, WinRE/TPM blockers, rollback, suspension, decryption), BitLocker-API/Operational (low-level API errors and driver failures), and System log (TPM/TPM-WMI hardware events including dictionary attack lockout). Optionally queries DrivePreparationTool/Operational if available. 11-entry embedded HRESULT translation map with scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["bitlocker", "event-log", "timeline", "error-codes", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query Get-BitLockerVolume, Win32_EncryptableVolume, Get-Tpm, Win32_Tpm, dsregcmd, FVE registry, or PolicyManager registry (those are BL001-BL006 domain). 4 log channels: (1) BitLocker-API/Management: Event 768 encryption commenced, 770/771 decryption start/complete, 773 protection suspended, 775 key protector generated, 778 encryption rolled back, 796 hardware assessment passed, 817 TPM seal, 834/835 TCG log invalid, 845 escrow success (defers to BL005), 846 escrow failed (defers to BL005), 851 silent encryption failed, 853 TPM not found, 854 WinRE missing, 858 key rotation failed (defers to BL005). (2) BitLocker-API/Operational: all events with level-based classification. (3) System log filtered to TPM/TPM-WMI/Microsoft-Windows-TPM-WMI sources, including Event 1026 dictionary attack lockout. (4) DrivePreparationTool/Operational with graceful fallback. Events merged into chronological timeline (most recent first, up to 40 shown). Context extraction for key events (cipher, protector type, PCR values, suspension reason). HRESULT extraction via regex with 11-entry translation map (0x80310059 policy conflict, 0x803100B4 eDrive, 0x80284008 TBS down, 0x803100CC PIN policy, 0x80070490 system partition, 0x80310000 locked volume, 0x80280001 TPM auth fail, 0x80072F9A Entra escrow, 0x80310030 TPM not found, 0x80310019 partition type, 0x8031006E busy). Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl007 = [e for e in verify if e['Id'] == 'BL007']
+    if bl007:
+        print(f"BL007 found. Name={bl007[0]['Name']}, Script={len(bl007[0]['Script'])} chars")
+    else:
+        print("ERROR: BL007 not found after insertion")
+PYEOF]` (detail in BL005) |
+| 851 | Silent encryption failed -- GPO conflict or prereqs | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL007",
+    "Name": "BLEventAnalysis",
+    "DisplayName": "BitLocker Event Log & Error Code Analysis",
+    "Category": "BitLocker",
+    "Description": "Builds a chronological timeline of BitLocker encryption lifecycle events and translates error codes into actionable explanations. Queries 3 log channels: BitLocker-API/Management (encryption start/complete, key protector generation, TPM sealing, escrow success/fail, silent encryption failure, WinRE/TPM blockers, rollback, suspension, decryption), BitLocker-API/Operational (low-level API errors and driver failures), and System log (TPM/TPM-WMI hardware events including dictionary attack lockout). Optionally queries DrivePreparationTool/Operational if available. 11-entry embedded HRESULT translation map with scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["bitlocker", "event-log", "timeline", "error-codes", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query Get-BitLockerVolume, Win32_EncryptableVolume, Get-Tpm, Win32_Tpm, dsregcmd, FVE registry, or PolicyManager registry (those are BL001-BL006 domain). 4 log channels: (1) BitLocker-API/Management: Event 768 encryption commenced, 770/771 decryption start/complete, 773 protection suspended, 775 key protector generated, 778 encryption rolled back, 796 hardware assessment passed, 817 TPM seal, 834/835 TCG log invalid, 845 escrow success (defers to BL005), 846 escrow failed (defers to BL005), 851 silent encryption failed, 853 TPM not found, 854 WinRE missing, 858 key rotation failed (defers to BL005). (2) BitLocker-API/Operational: all events with level-based classification. (3) System log filtered to TPM/TPM-WMI/Microsoft-Windows-TPM-WMI sources, including Event 1026 dictionary attack lockout. (4) DrivePreparationTool/Operational with graceful fallback. Events merged into chronological timeline (most recent first, up to 40 shown). Context extraction for key events (cipher, protector type, PCR values, suspension reason). HRESULT extraction via regex with 11-entry translation map (0x80310059 policy conflict, 0x803100B4 eDrive, 0x80284008 TBS down, 0x803100CC PIN policy, 0x80070490 system partition, 0x80310000 locked volume, 0x80280001 TPM auth fail, 0x80072F9A Entra escrow, 0x80310030 TPM not found, 0x80310019 partition type, 0x8031006E busy). Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl007 = [e for e in verify if e['Id'] == 'BL007']
+    if bl007:
+        print(f"BL007 found. Name={bl007[0]['Name']}, Script={len(bl007[0]['Script'])} chars")
+    else:
+        print("ERROR: BL007 not found after insertion")
+PYEOF]` |
+| 853 | TPM not found or bootable media detected | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL007",
+    "Name": "BLEventAnalysis",
+    "DisplayName": "BitLocker Event Log & Error Code Analysis",
+    "Category": "BitLocker",
+    "Description": "Builds a chronological timeline of BitLocker encryption lifecycle events and translates error codes into actionable explanations. Queries 3 log channels: BitLocker-API/Management (encryption start/complete, key protector generation, TPM sealing, escrow success/fail, silent encryption failure, WinRE/TPM blockers, rollback, suspension, decryption), BitLocker-API/Operational (low-level API errors and driver failures), and System log (TPM/TPM-WMI hardware events including dictionary attack lockout). Optionally queries DrivePreparationTool/Operational if available. 11-entry embedded HRESULT translation map with scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["bitlocker", "event-log", "timeline", "error-codes", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query Get-BitLockerVolume, Win32_EncryptableVolume, Get-Tpm, Win32_Tpm, dsregcmd, FVE registry, or PolicyManager registry (those are BL001-BL006 domain). 4 log channels: (1) BitLocker-API/Management: Event 768 encryption commenced, 770/771 decryption start/complete, 773 protection suspended, 775 key protector generated, 778 encryption rolled back, 796 hardware assessment passed, 817 TPM seal, 834/835 TCG log invalid, 845 escrow success (defers to BL005), 846 escrow failed (defers to BL005), 851 silent encryption failed, 853 TPM not found, 854 WinRE missing, 858 key rotation failed (defers to BL005). (2) BitLocker-API/Operational: all events with level-based classification. (3) System log filtered to TPM/TPM-WMI/Microsoft-Windows-TPM-WMI sources, including Event 1026 dictionary attack lockout. (4) DrivePreparationTool/Operational with graceful fallback. Events merged into chronological timeline (most recent first, up to 40 shown). Context extraction for key events (cipher, protector type, PCR values, suspension reason). HRESULT extraction via regex with 11-entry translation map (0x80310059 policy conflict, 0x803100B4 eDrive, 0x80284008 TBS down, 0x803100CC PIN policy, 0x80070490 system partition, 0x80310000 locked volume, 0x80280001 TPM auth fail, 0x80072F9A Entra escrow, 0x80310030 TPM not found, 0x80310019 partition type, 0x8031006E busy). Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl007 = [e for e in verify if e['Id'] == 'BL007']
+    if bl007:
+        print(f"BL007 found. Name={bl007[0]['Name']}, Script={len(bl007[0]['Script'])} chars")
+    else:
+        print("ERROR: BL007 not found after insertion")
+PYEOF]` |
+| 854 | WinRE not configured -- silent encryption blocked | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL007",
+    "Name": "BLEventAnalysis",
+    "DisplayName": "BitLocker Event Log & Error Code Analysis",
+    "Category": "BitLocker",
+    "Description": "Builds a chronological timeline of BitLocker encryption lifecycle events and translates error codes into actionable explanations. Queries 3 log channels: BitLocker-API/Management (encryption start/complete, key protector generation, TPM sealing, escrow success/fail, silent encryption failure, WinRE/TPM blockers, rollback, suspension, decryption), BitLocker-API/Operational (low-level API errors and driver failures), and System log (TPM/TPM-WMI hardware events including dictionary attack lockout). Optionally queries DrivePreparationTool/Operational if available. 11-entry embedded HRESULT translation map with scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["bitlocker", "event-log", "timeline", "error-codes", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query Get-BitLockerVolume, Win32_EncryptableVolume, Get-Tpm, Win32_Tpm, dsregcmd, FVE registry, or PolicyManager registry (those are BL001-BL006 domain). 4 log channels: (1) BitLocker-API/Management: Event 768 encryption commenced, 770/771 decryption start/complete, 773 protection suspended, 775 key protector generated, 778 encryption rolled back, 796 hardware assessment passed, 817 TPM seal, 834/835 TCG log invalid, 845 escrow success (defers to BL005), 846 escrow failed (defers to BL005), 851 silent encryption failed, 853 TPM not found, 854 WinRE missing, 858 key rotation failed (defers to BL005). (2) BitLocker-API/Operational: all events with level-based classification. (3) System log filtered to TPM/TPM-WMI/Microsoft-Windows-TPM-WMI sources, including Event 1026 dictionary attack lockout. (4) DrivePreparationTool/Operational with graceful fallback. Events merged into chronological timeline (most recent first, up to 40 shown). Context extraction for key events (cipher, protector type, PCR values, suspension reason). HRESULT extraction via regex with 11-entry translation map (0x80310059 policy conflict, 0x803100B4 eDrive, 0x80284008 TBS down, 0x803100CC PIN policy, 0x80070490 system partition, 0x80310000 locked volume, 0x80280001 TPM auth fail, 0x80072F9A Entra escrow, 0x80310030 TPM not found, 0x80310019 partition type, 0x8031006E busy). Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl007 = [e for e in verify if e['Id'] == 'BL007']
+    if bl007:
+        print(f"BL007 found. Name={bl007[0]['Name']}, Script={len(bl007[0]['Script'])} chars")
+    else:
+        print("ERROR: BL007 not found after insertion")
+PYEOF]` |
+| 858 | Recovery key rotation failed | `[]` (detail in BL005) |
+| 778 | Encryption rolled back -- volume reverted | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL007",
+    "Name": "BLEventAnalysis",
+    "DisplayName": "BitLocker Event Log & Error Code Analysis",
+    "Category": "BitLocker",
+    "Description": "Builds a chronological timeline of BitLocker encryption lifecycle events and translates error codes into actionable explanations. Queries 3 log channels: BitLocker-API/Management (encryption start/complete, key protector generation, TPM sealing, escrow success/fail, silent encryption failure, WinRE/TPM blockers, rollback, suspension, decryption), BitLocker-API/Operational (low-level API errors and driver failures), and System log (TPM/TPM-WMI hardware events including dictionary attack lockout). Optionally queries DrivePreparationTool/Operational if available. 11-entry embedded HRESULT translation map with scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["bitlocker", "event-log", "timeline", "error-codes", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query Get-BitLockerVolume, Win32_EncryptableVolume, Get-Tpm, Win32_Tpm, dsregcmd, FVE registry, or PolicyManager registry (those are BL001-BL006 domain). 4 log channels: (1) BitLocker-API/Management: Event 768 encryption commenced, 770/771 decryption start/complete, 773 protection suspended, 775 key protector generated, 778 encryption rolled back, 796 hardware assessment passed, 817 TPM seal, 834/835 TCG log invalid, 845 escrow success (defers to BL005), 846 escrow failed (defers to BL005), 851 silent encryption failed, 853 TPM not found, 854 WinRE missing, 858 key rotation failed (defers to BL005). (2) BitLocker-API/Operational: all events with level-based classification. (3) System log filtered to TPM/TPM-WMI/Microsoft-Windows-TPM-WMI sources, including Event 1026 dictionary attack lockout. (4) DrivePreparationTool/Operational with graceful fallback. Events merged into chronological timeline (most recent first, up to 40 shown). Context extraction for key events (cipher, protector type, PCR values, suspension reason). HRESULT extraction via regex with 11-entry translation map (0x80310059 policy conflict, 0x803100B4 eDrive, 0x80284008 TBS down, 0x803100CC PIN policy, 0x80070490 system partition, 0x80310000 locked volume, 0x80280001 TPM auth fail, 0x80072F9A Entra escrow, 0x80310030 TPM not found, 0x80310019 partition type, 0x8031006E busy). Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl007 = [e for e in verify if e['Id'] == 'BL007']
+    if bl007:
+        print(f"BL007 found. Name={bl007[0]['Name']}, Script={len(bl007[0]['Script'])} chars")
+    else:
+        print("ERROR: BL007 not found after insertion")
+PYEOF]` |
+| 770 | Decryption commenced | `[]` |
+| 771 | Decryption completed | `[i]` |
+| 773 | Protection suspended (auto for WU/BIOS) | `[]` |
+
+Context extraction for key events:
+- Event 768: volume letter and cipher algorithm
+- Event 775: key protector type (TPM, RecoveryPassword, etc.)
+- Event 817: PCR measurement values
+- Event 773: auto-suspend detection (WU/BIOS patterns)
+- Event 851: GPO conflict or WinRE prereq hint
+
+##### Section 1b: Operational Log Events
+
+All events from `Microsoft-Windows-BitLocker-API/Operational` with level-based classification:
+- Level 1-2 (Critical/Error): `[!!]`
+- Level 3 (Warning): `[!]`
+- Level 4 (Info): `[i]`
+
+##### Section 1c: System Log TPM Events
+
+Events from `System` log filtered to TPM sources:
+
+| Event ID | Source | Meaning |
+|---|---|---|
+| 1026 | TPM-WMI | Dictionary attack lockout -- hardware timeout active |
+| Various | TPM, Microsoft-Windows-TPM-WMI | Hardware communication failures |
+
+##### Section 1d: DrivePreparationTool Log
+
+Queries `Microsoft-Windows-BitLocker-DrivePreparationTool/Operational` if available. Gracefully skips if the channel does not exist. Logs partition preparation events relevant to encryption failures.
+
+##### Section 2: HRESULT Error Code Summary
+
+HRESULTs extracted from all event payloads via regex `0x[0-9A-Fa-f]{8}`. Unique codes listed with translations:
+
+| Code | Symbolic Name | Translation | Routing |
+|---|---|---|---|
+| `0x80310059` | FVE_E_POLICY_CONFLICT | Conflicting GPO / platform validation incompatible | BL006 |
+| `0x803100B4` | FVE_E_EDRIVE_INCOMPATIBLE | Hardware encryption (eDrive) misconfiguration | BL003 |
+| `0x80284008` | TBS_E_SERVICE_NOT_RUNNING | TPM Base Services down | BL002 |
+| `0x803100CC` | FVE_E_POLICY_PIN | Alphanumeric PIN policy mismatch | BL006 |
+| `0x80070490` | ERROR_NOT_FOUND | Missing system partition / BCD corruption | BL003 |
+| `0x80310000` | FVE_E_LOCKED_VOLUME | Drive locked by BitLocker | manual unlock |
+| `0x80280001` | TPM_E_AUTHFAIL | TPM auth failure -- wrong PIN/owner auth | BL002 |
+| `0x80072F9A` | WININET_E_CONNECTION_ABORTED | Entra ID escrow failure -- PRT issue | BL005 |
+| `0x80310030` | FVE_E_NOT_FOUND | TPM not found -- check BIOS | BL002 |
+| `0x80310019` | FVE_E_NOT_ALLOWED | Wrong partition type / unsupported volume | BL003 |
+| `0x8031006E` | FVE_E_BUSY | Already encrypting/decrypting | wait or cancel |
+
+#### Example Output (Encryption Rollback Scenario)
+
+```
+=== BitLocker Event Log & Error Code Analysis ===
+[i]   Time Window: last 7 day(s)
+       Cutoff: 2026-03-28 22:55:00
+
+--- Event Timeline ---
+[i]   6 event(s) found across all log channels.
+       2 critical issue(s) and 0 warning(s) detected.
+
+[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL007",
+    "Name": "BLEventAnalysis",
+    "DisplayName": "BitLocker Event Log & Error Code Analysis",
+    "Category": "BitLocker",
+    "Description": "Builds a chronological timeline of BitLocker encryption lifecycle events and translates error codes into actionable explanations. Queries 3 log channels: BitLocker-API/Management (encryption start/complete, key protector generation, TPM sealing, escrow success/fail, silent encryption failure, WinRE/TPM blockers, rollback, suspension, decryption), BitLocker-API/Operational (low-level API errors and driver failures), and System log (TPM/TPM-WMI hardware events including dictionary attack lockout). Optionally queries DrivePreparationTool/Operational if available. 11-entry embedded HRESULT translation map with scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["bitlocker", "event-log", "timeline", "error-codes", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query Get-BitLockerVolume, Win32_EncryptableVolume, Get-Tpm, Win32_Tpm, dsregcmd, FVE registry, or PolicyManager registry (those are BL001-BL006 domain). 4 log channels: (1) BitLocker-API/Management: Event 768 encryption commenced, 770/771 decryption start/complete, 773 protection suspended, 775 key protector generated, 778 encryption rolled back, 796 hardware assessment passed, 817 TPM seal, 834/835 TCG log invalid, 845 escrow success (defers to BL005), 846 escrow failed (defers to BL005), 851 silent encryption failed, 853 TPM not found, 854 WinRE missing, 858 key rotation failed (defers to BL005). (2) BitLocker-API/Operational: all events with level-based classification. (3) System log filtered to TPM/TPM-WMI/Microsoft-Windows-TPM-WMI sources, including Event 1026 dictionary attack lockout. (4) DrivePreparationTool/Operational with graceful fallback. Events merged into chronological timeline (most recent first, up to 40 shown). Context extraction for key events (cipher, protector type, PCR values, suspension reason). HRESULT extraction via regex with 11-entry translation map (0x80310059 policy conflict, 0x803100B4 eDrive, 0x80284008 TBS down, 0x803100CC PIN policy, 0x80070490 system partition, 0x80310000 locked volume, 0x80280001 TPM auth fail, 0x80072F9A Entra escrow, 0x80310030 TPM not found, 0x80310019 partition type, 0x8031006E busy). Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl007 = [e for e in verify if e['Id'] == 'BL007']
+    if bl007:
+        print(f"BL007 found. Name={bl007[0]['Name']}, Script={len(bl007[0]['Script'])} chars")
+    else:
+        print("ERROR: BL007 not found after insertion")
+PYEOF]  2026-04-01 09:17  [Mgmt]   Encryption ROLLED BACK -- volume reverted to unprotected
+[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL007",
+    "Name": "BLEventAnalysis",
+    "DisplayName": "BitLocker Event Log & Error Code Analysis",
+    "Category": "BitLocker",
+    "Description": "Builds a chronological timeline of BitLocker encryption lifecycle events and translates error codes into actionable explanations. Queries 3 log channels: BitLocker-API/Management (encryption start/complete, key protector generation, TPM sealing, escrow success/fail, silent encryption failure, WinRE/TPM blockers, rollback, suspension, decryption), BitLocker-API/Operational (low-level API errors and driver failures), and System log (TPM/TPM-WMI hardware events including dictionary attack lockout). Optionally queries DrivePreparationTool/Operational if available. 11-entry embedded HRESULT translation map with scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["bitlocker", "event-log", "timeline", "error-codes", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query Get-BitLockerVolume, Win32_EncryptableVolume, Get-Tpm, Win32_Tpm, dsregcmd, FVE registry, or PolicyManager registry (those are BL001-BL006 domain). 4 log channels: (1) BitLocker-API/Management: Event 768 encryption commenced, 770/771 decryption start/complete, 773 protection suspended, 775 key protector generated, 778 encryption rolled back, 796 hardware assessment passed, 817 TPM seal, 834/835 TCG log invalid, 845 escrow success (defers to BL005), 846 escrow failed (defers to BL005), 851 silent encryption failed, 853 TPM not found, 854 WinRE missing, 858 key rotation failed (defers to BL005). (2) BitLocker-API/Operational: all events with level-based classification. (3) System log filtered to TPM/TPM-WMI/Microsoft-Windows-TPM-WMI sources, including Event 1026 dictionary attack lockout. (4) DrivePreparationTool/Operational with graceful fallback. Events merged into chronological timeline (most recent first, up to 40 shown). Context extraction for key events (cipher, protector type, PCR values, suspension reason). HRESULT extraction via regex with 11-entry translation map (0x80310059 policy conflict, 0x803100B4 eDrive, 0x80284008 TBS down, 0x803100CC PIN policy, 0x80070490 system partition, 0x80310000 locked volume, 0x80280001 TPM auth fail, 0x80072F9A Entra escrow, 0x80310030 TPM not found, 0x80310019 partition type, 0x8031006E busy). Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl007 = [e for e in verify if e['Id'] == 'BL007']
+    if bl007:
+        print(f"BL007 found. Name={bl007[0]['Name']}, Script={len(bl007[0]['Script'])} chars")
+    else:
+        print("ERROR: BL007 not found after insertion")
+PYEOF]  2026-04-01 09:16  [Mgmt]   Escrow to Entra ID FAILED (detail: BL005) [Error: 0x80072F9A]
+[i]   2026-04-01 09:16  [Mgmt]   Encryption commenced Volume: C: Cipher: XTS-AES 256
+[OK]  2026-04-01 09:16  [Mgmt]   Key protector generated Type: TPM
+[OK]  2026-04-01 09:15  [Mgmt]   Hardware assessment passed (software encryption)
+[OK]  2026-04-01 09:15  [Mgmt]   Volume master key sealed to TPM
+
+--- Error Code Summary ---
+[]   1 unique HRESULT code(s) extracted from events.
+
+[]   0x80072F9A (WININET_E_CONNECTION_ABORTED)
+       Entra ID escrow failure -- certificate permissions or PRT issue. --> Run BL005 BLEscrowCheck
+
+--- Summary ---
+RESULT: 2 issue(s) and 1 warning(s) found. Review items marked [python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL007",
+    "Name": "BLEventAnalysis",
+    "DisplayName": "BitLocker Event Log & Error Code Analysis",
+    "Category": "BitLocker",
+    "Description": "Builds a chronological timeline of BitLocker encryption lifecycle events and translates error codes into actionable explanations. Queries 3 log channels: BitLocker-API/Management (encryption start/complete, key protector generation, TPM sealing, escrow success/fail, silent encryption failure, WinRE/TPM blockers, rollback, suspension, decryption), BitLocker-API/Operational (low-level API errors and driver failures), and System log (TPM/TPM-WMI hardware events including dictionary attack lockout). Optionally queries DrivePreparationTool/Operational if available. 11-entry embedded HRESULT translation map with scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["bitlocker", "event-log", "timeline", "error-codes", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query Get-BitLockerVolume, Win32_EncryptableVolume, Get-Tpm, Win32_Tpm, dsregcmd, FVE registry, or PolicyManager registry (those are BL001-BL006 domain). 4 log channels: (1) BitLocker-API/Management: Event 768 encryption commenced, 770/771 decryption start/complete, 773 protection suspended, 775 key protector generated, 778 encryption rolled back, 796 hardware assessment passed, 817 TPM seal, 834/835 TCG log invalid, 845 escrow success (defers to BL005), 846 escrow failed (defers to BL005), 851 silent encryption failed, 853 TPM not found, 854 WinRE missing, 858 key rotation failed (defers to BL005). (2) BitLocker-API/Operational: all events with level-based classification. (3) System log filtered to TPM/TPM-WMI/Microsoft-Windows-TPM-WMI sources, including Event 1026 dictionary attack lockout. (4) DrivePreparationTool/Operational with graceful fallback. Events merged into chronological timeline (most recent first, up to 40 shown). Context extraction for key events (cipher, protector type, PCR values, suspension reason). HRESULT extraction via regex with 11-entry translation map (0x80310059 policy conflict, 0x803100B4 eDrive, 0x80284008 TBS down, 0x803100CC PIN policy, 0x80070490 system partition, 0x80310000 locked volume, 0x80280001 TPM auth fail, 0x80072F9A Entra escrow, 0x80310030 TPM not found, 0x80310019 partition type, 0x8031006E busy). Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl007 = [e for e in verify if e['Id'] == 'BL007']
+    if bl007:
+        print(f"BL007 found. Name={bl007[0]['Name']}, Script={len(bl007[0]['Script'])} chars")
+    else:
+        print("ERROR: BL007 not found after insertion")
+PYEOF] above.
+
+NEXT:   Address the most common error code listed above.
+        If escrow failures (Event 846)    -> run BL005 BLEscrowCheck
+        If GPO conflicts (Event 851)      -> run BL006 BLPolicyConflict
+        If TPM issues (Event 853/1026)    -> run BL002 BLTpmHealth
+        If hardware/partition errors       -> run BL003 BLHardwarePrereqs
+        If WinRE missing (Event 854)       -> reagentc /enable
+        If protection suspended (Event 773) -> verify protection resumed: manage-bde -protectors -enable C:
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---|---|
+| Current volume encryption status, ghost state | BL001 BLStatusSnapshot |
+| TPM hardware state (presence, version, CVEs, lockout timer) | BL002 BLTpmHealth |
+| Hardware prereqs (UEFI, Secure Boot, GPT, system partition) | BL003 BLHardwarePrereqs |
+| Intune policy parsing (dsregcmd, CSP registry, scheduled task) | BL004 BLIntunePolicy |
+| Escrow pipeline (policy, AAD registration, connectivity, protectors) | BL005 BLEscrowCheck |
+| GPO vs MDM policy conflict (FVE vs PolicyManager) | BL006 BLPolicyConflict |
+| Encryption readiness dry run | BL008 BLReadinessCheck |
+
+**Non-overlap notes:**
+- BL007 reads *event logs only*. Does NOT query volume status APIs, TPM state, firmware, dsregcmd, or policy registry.
+- BL005 covers escrow Events 845/846/851/858/778 in detail. BL007 includes these in the chronological timeline for context but defers deep analysis to BL005.
+- BL006 reads policy *registry*. BL007 reads policy conflict *events* (Event 851) and routes to BL006.
+- BL002 reads TPM *state*. BL007 reads TPM *events* from System log (Event 1026 lockout) and routes to BL002.
+
+#### Version History
+
+| Version | Changes |
+|---|---|
+| 1.0 | Initial build. 4 log channels queried: (1) BitLocker-API/Management with 16 tracked Event IDs (768 encryption commenced with cipher/volume extraction, 770/771 decryption lifecycle, 773 protection suspended with auto-suspend detection, 775 key protector generated with type extraction, 778 encryption rollback, 796 hardware assessment, 817 TPM seal with PCR extraction, 834/835 TCG log invalid, 845 escrow success, 846 escrow failed, 851 silent encryption failed with GPO/WinRE hints, 853 TPM not found, 854 WinRE missing, 858 key rotation failed). (2) BitLocker-API/Operational with level-based classification (up to 50 events). (3) System log filtered to TPM/TPM-WMI sources (up to 30 events) including Event 1026 dictionary attack. (4) DrivePreparationTool/Operational with graceful fallback (up to 20 events). All events merged chronologically (most recent first, up to 40 displayed). HRESULT extraction via regex with 11-entry translation map. Configurable time window via Param1 (default 7, max 90). |
+
+---
+
+### BL008 -- BLReadinessCheck
+
+**Version:** 1.0
+**Category:** BitLocker
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Encryption readiness dry run: answers the question "If you pressed encrypt right now, what would go wrong?" Performs a pre-flight check that aggregates multiple readiness signals into a single go/no-go verdict.
+
+This is the final Tier 5 diagnostic -- a synthesis tool. After BL001-BL007 each diagnose one subsystem, BL008 pulls the threads together into a single "ready / not ready" answer.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name BLReadinessCheck
+```
+
+**Parameters:** None
+
+#### What It Checks
+
+##### Data Sources
+
+BL008 reads from multiple sources but does NOT deeply duplicate prior diagnostics:
+- `manage-bde -status` CLI (NOT Get-BitLockerVolume or WMI status snapshot -- those are BL001)
+- `Win32_EncryptableVolume` WMI read-only methods (`GetConversionStatus`, `GetProtectionStatus`)
+- `bcdedit /enum all` CLI for BCD integrity
+- `reagentc /info` CLI for WinRE health
+- `manage-bde -protectors -get` CLI for PCR validation profile
+- `Get-Service` for BDESVC, TBS, RpcSs dependency gate
+
+##### Section 0: Service Dependency Gate
+
+Lightweight check that the 3 required services are in a state where encryption can proceed:
+
+| Service | Requirement |
+|---|---|
+| BDESVC (BitLocker Drive Encryption Service) | Not Disabled (Manual/Trigger-Start is normal) |
+| TBS (TPM Base Services) | Not Disabled, preferably Running |
+| RpcSs (Remote Procedure Call) | Must be Running |
+
+##### Section 1: Volume State Assessment (manage-bde -status)
+
+Parses `manage-bde -status C:` STDOUT for:
+
+| Field | Readiness Criteria | Verdict |
+|---|---|---|
+| Conversion Status | `Fully Decrypted` = eligible | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL008_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL008",
+    "Name": "BLReadinessCheck",
+    "DisplayName": "BitLocker Encryption Readiness Dry Run",
+    "Category": "BitLocker",
+    "Description": "Pre-flight check: answers 'If you pressed encrypt right now, what would go wrong?' Performs 6 check groups: (1) Service dependency gate (BDESVC, TBS, RpcSs status), (2) Volume state via manage-bde -status parsing (conversion status, ghost state detection, orphaned protectors, residual encryption method), (3) WMI readiness via Win32_EncryptableVolume GetConversionStatus + GetProtectionStatus read-only methods, (4) BCD integrity via bcdedit /enum all parsing (bootmgr device, OS loader device/osdevice, unknown volume detection), (5) WinRE health via reagentc /info parsing (status, WIM location, null-GUID BCD identifier detection), (6) PCR validation via manage-bde -protectors -get parsing (ideal PCR 7,11 vs degraded 0,2,4,11 OROM fallback). Single go/no-go verdict with blockers and warnings.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "readiness", "dry-run", "winre", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Synthesis scriptlet -- aggregates readiness signals without deep-diving into subsystems covered by BL001-BL007. Does NOT use Get-BitLockerVolume or WMI status snapshot (BL001 domain). Does NOT query Get-Tpm, tpmtool, or Win32_Tpm (BL002 domain). Does NOT check firmware mode, Secure Boot, GPT, or OEM quirks (BL003 domain). Does NOT parse dsregcmd or PolicyManager registry (BL004/BL006 domain). Does NOT check escrow policy, AAD registration, or connectivity (BL005 domain). Does NOT query event logs (BL007 domain). Uses manage-bde -status CLI for volume assessment (distinct from BL001's Get-BitLockerVolume API), Win32_EncryptableVolume WMI for read-only GetConversionStatus/GetProtectionStatus methods (distinct from BL001's WMI fallback which reads the same status fields), bcdedit /enum all for BCD path integrity, reagentc /info for WinRE health with null-GUID detection and CVE-2024-20666 context, manage-bde -protectors -get for PCR validation profile analysis (7,11=ideal, 0,2,4,11=degraded OROM fallback). Lightweight service dependency gate: BDESVC (not Disabled), TBS (not Disabled, preferably Running), RpcSs (must be Running). Output: single readiness verdict (READY / CONDITIONALLY READY / NOT READY) with blocker and warning lists."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL007':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL007 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL008 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl008 = [e for e in verify if e['Id'] == 'BL008']
+    if bl008:
+        print(f"BL008 found. Name={bl008[0]['Name']}, Script={len(bl008[0]['Script'])} chars")
+    else:
+        print("ERROR: BL008 not found after insertion")
+PYEOF]` if in-progress, paused, or ghost state |
+| Percentage Encrypted | 0% = clean start | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL008_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL008",
+    "Name": "BLReadinessCheck",
+    "DisplayName": "BitLocker Encryption Readiness Dry Run",
+    "Category": "BitLocker",
+    "Description": "Pre-flight check: answers 'If you pressed encrypt right now, what would go wrong?' Performs 6 check groups: (1) Service dependency gate (BDESVC, TBS, RpcSs status), (2) Volume state via manage-bde -status parsing (conversion status, ghost state detection, orphaned protectors, residual encryption method), (3) WMI readiness via Win32_EncryptableVolume GetConversionStatus + GetProtectionStatus read-only methods, (4) BCD integrity via bcdedit /enum all parsing (bootmgr device, OS loader device/osdevice, unknown volume detection), (5) WinRE health via reagentc /info parsing (status, WIM location, null-GUID BCD identifier detection), (6) PCR validation via manage-bde -protectors -get parsing (ideal PCR 7,11 vs degraded 0,2,4,11 OROM fallback). Single go/no-go verdict with blockers and warnings.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "readiness", "dry-run", "winre", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Synthesis scriptlet -- aggregates readiness signals without deep-diving into subsystems covered by BL001-BL007. Does NOT use Get-BitLockerVolume or WMI status snapshot (BL001 domain). Does NOT query Get-Tpm, tpmtool, or Win32_Tpm (BL002 domain). Does NOT check firmware mode, Secure Boot, GPT, or OEM quirks (BL003 domain). Does NOT parse dsregcmd or PolicyManager registry (BL004/BL006 domain). Does NOT check escrow policy, AAD registration, or connectivity (BL005 domain). Does NOT query event logs (BL007 domain). Uses manage-bde -status CLI for volume assessment (distinct from BL001's Get-BitLockerVolume API), Win32_EncryptableVolume WMI for read-only GetConversionStatus/GetProtectionStatus methods (distinct from BL001's WMI fallback which reads the same status fields), bcdedit /enum all for BCD path integrity, reagentc /info for WinRE health with null-GUID detection and CVE-2024-20666 context, manage-bde -protectors -get for PCR validation profile analysis (7,11=ideal, 0,2,4,11=degraded OROM fallback). Lightweight service dependency gate: BDESVC (not Disabled), TBS (not Disabled, preferably Running), RpcSs (must be Running). Output: single readiness verdict (READY / CONDITIONALLY READY / NOT READY) with blocker and warning lists."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL007':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL007 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL008 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl008 = [e for e in verify if e['Id'] == 'BL008']
+    if bl008:
+        print(f"BL008 found. Name={bl008[0]['Name']}, Script={len(bl008[0]['Script'])} chars")
+    else:
+        print("ERROR: BL008 not found after insertion")
+PYEOF]` if partial (> 0% and < 100%) |
+| Encryption Method | `None` expected on decrypted volume | `[]` if residual metadata present |
+| Key Protectors | None expected on decrypted volume | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL008_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL008",
+    "Name": "BLReadinessCheck",
+    "DisplayName": "BitLocker Encryption Readiness Dry Run",
+    "Category": "BitLocker",
+    "Description": "Pre-flight check: answers 'If you pressed encrypt right now, what would go wrong?' Performs 6 check groups: (1) Service dependency gate (BDESVC, TBS, RpcSs status), (2) Volume state via manage-bde -status parsing (conversion status, ghost state detection, orphaned protectors, residual encryption method), (3) WMI readiness via Win32_EncryptableVolume GetConversionStatus + GetProtectionStatus read-only methods, (4) BCD integrity via bcdedit /enum all parsing (bootmgr device, OS loader device/osdevice, unknown volume detection), (5) WinRE health via reagentc /info parsing (status, WIM location, null-GUID BCD identifier detection), (6) PCR validation via manage-bde -protectors -get parsing (ideal PCR 7,11 vs degraded 0,2,4,11 OROM fallback). Single go/no-go verdict with blockers and warnings.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "readiness", "dry-run", "winre", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Synthesis scriptlet -- aggregates readiness signals without deep-diving into subsystems covered by BL001-BL007. Does NOT use Get-BitLockerVolume or WMI status snapshot (BL001 domain). Does NOT query Get-Tpm, tpmtool, or Win32_Tpm (BL002 domain). Does NOT check firmware mode, Secure Boot, GPT, or OEM quirks (BL003 domain). Does NOT parse dsregcmd or PolicyManager registry (BL004/BL006 domain). Does NOT check escrow policy, AAD registration, or connectivity (BL005 domain). Does NOT query event logs (BL007 domain). Uses manage-bde -status CLI for volume assessment (distinct from BL001's Get-BitLockerVolume API), Win32_EncryptableVolume WMI for read-only GetConversionStatus/GetProtectionStatus methods (distinct from BL001's WMI fallback which reads the same status fields), bcdedit /enum all for BCD path integrity, reagentc /info for WinRE health with null-GUID detection and CVE-2024-20666 context, manage-bde -protectors -get for PCR validation profile analysis (7,11=ideal, 0,2,4,11=degraded OROM fallback). Lightweight service dependency gate: BDESVC (not Disabled), TBS (not Disabled, preferably Running), RpcSs (must be Running). Output: single readiness verdict (READY / CONDITIONALLY READY / NOT READY) with blocker and warning lists."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL007':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL007 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL008 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl008 = [e for e in verify if e['Id'] == 'BL008']
+    if bl008:
+        print(f"BL008 found. Name={bl008[0]['Name']}, Script={len(bl008[0]['Script'])} chars")
+    else:
+        print("ERROR: BL008 not found after insertion")
+PYEOF]` if orphaned protectors found |
+
+**Ghost state detection**: `Fully Encrypted` + `Protection Off` = "Waiting for Activation". Critical finding -- FVEK stored in the clear.
+
+##### Section 2: WMI Readiness (Win32_EncryptableVolume)
+
+Queries `ROOT\CIMV2\Security\MicrosoftVolumeEncryption` namespace:
+
+| WMI Method | Purpose |
+|---|---|
+| `GetConversionStatus()` | Returns ConversionStatus code (0=FullyDecrypted, 1=FullyEncrypted, 2-5=transitional) and EncryptionPercentage |
+| `GetProtectionStatus()` | Returns ProtectionStatus code (0=Off, 1=On, 2=Unknown) |
+
+> **Note:** The `PrepareVolume` WMI method is NOT invoked because it actually writes a discovery volume -- it is not purely read-only. BL008 uses read-only methods only.
+
+##### Section 3: BCD Integrity (bcdedit /enum all)
+
+Parses `bcdedit /enum all` output into blocks and validates:
+
+| Target | Validation |
+|---|---|
+| `{bootmgr}` block `device` | Must point to a valid partition (not `unknown`) |
+| `{current}`/`{default}` block `device` | Must point to OS partition (not `unknown`) |
+| `{current}`/`{default}` block `osdevice` | Must point to OS partition (not `unknown`) |
+
+Error code context: `0x80310052` (FVE_E_BCD_APPLICATIONS_PATH_INCORRECT) -- BCD paths don't match physical partitions. Common after cloning or imaging.
+
+##### Section 4: WinRE Health (reagentc /info)
+
+Parses `reagentc /info` STDOUT:
+
+| Field | Validation |
+|---|---|
+| `Windows RE status` | Must be `Enabled` -- `Disabled` is hard block for silent encryption |
+| `Windows RE location` | Must contain valid device path |
+| `BCD identifier` | Must NOT be null GUID `{00000000-...}` -- null = severe BCD/WinRE linkage break |
+
+CVE-2024-20666 context: if WinRE is disabled, the WinRE partition may be too small after cumulative update patching.
+
+##### Section 5: PCR Validation Profile (manage-bde -protectors -get)
+
+Parses `manage-bde -protectors -get C:` for TPM protector block:
+
+| PCR Profile | Meaning | Verdict |
+|---|---|---|
+| `7, 11` | Ideal -- Secure Boot + BitLocker Access Control | `[OK]` |
+| `0, 2, 4, 11` | Degraded legacy -- OROM/UEFI CA fallback | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/BL008_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "BL008",
+    "Name": "BLReadinessCheck",
+    "DisplayName": "BitLocker Encryption Readiness Dry Run",
+    "Category": "BitLocker",
+    "Description": "Pre-flight check: answers 'If you pressed encrypt right now, what would go wrong?' Performs 6 check groups: (1) Service dependency gate (BDESVC, TBS, RpcSs status), (2) Volume state via manage-bde -status parsing (conversion status, ghost state detection, orphaned protectors, residual encryption method), (3) WMI readiness via Win32_EncryptableVolume GetConversionStatus + GetProtectionStatus read-only methods, (4) BCD integrity via bcdedit /enum all parsing (bootmgr device, OS loader device/osdevice, unknown volume detection), (5) WinRE health via reagentc /info parsing (status, WIM location, null-GUID BCD identifier detection), (6) PCR validation via manage-bde -protectors -get parsing (ideal PCR 7,11 vs degraded 0,2,4,11 OROM fallback). Single go/no-go verdict with blockers and warnings.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "readiness", "dry-run", "winre", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Synthesis scriptlet -- aggregates readiness signals without deep-diving into subsystems covered by BL001-BL007. Does NOT use Get-BitLockerVolume or WMI status snapshot (BL001 domain). Does NOT query Get-Tpm, tpmtool, or Win32_Tpm (BL002 domain). Does NOT check firmware mode, Secure Boot, GPT, or OEM quirks (BL003 domain). Does NOT parse dsregcmd or PolicyManager registry (BL004/BL006 domain). Does NOT check escrow policy, AAD registration, or connectivity (BL005 domain). Does NOT query event logs (BL007 domain). Uses manage-bde -status CLI for volume assessment (distinct from BL001's Get-BitLockerVolume API), Win32_EncryptableVolume WMI for read-only GetConversionStatus/GetProtectionStatus methods (distinct from BL001's WMI fallback which reads the same status fields), bcdedit /enum all for BCD path integrity, reagentc /info for WinRE health with null-GUID detection and CVE-2024-20666 context, manage-bde -protectors -get for PCR validation profile analysis (7,11=ideal, 0,2,4,11=degraded OROM fallback). Lightweight service dependency gate: BDESVC (not Disabled), TBS (not Disabled, preferably Running), RpcSs (must be Running). Output: single readiness verdict (READY / CONDITIONALLY READY / NOT READY) with blocker and warning lists."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL007':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL007 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL008 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl008 = [e for e in verify if e['Id'] == 'BL008']
+    if bl008:
+        print(f"BL008 found. Name={bl008[0]['Name']}, Script={len(bl008[0]['Script'])} chars")
+    else:
+        print("ERROR: BL008 not found after insertion")
+PYEOF]` Brittle config |
+| No TPM protector | Not yet encrypted or no TPM binding | `[i]` Expected |
+
+Context: degraded profile indicates unsigned Option ROM interference (dGPU, RAID controller). Not fixable from OS -- requires BIOS/vendor action.
+
+##### Readiness Verdict
+
+Single output line:
+- **READY FOR ENCRYPTION**: No blockers, no warnings
+- **CONDITIONALLY READY**: Warnings but no hard blockers
+- **NOT READY**: Hard blockers detected with itemized list
+
+#### Example Output (Ready Scenario)
+
+```
+=== BitLocker Encryption Readiness Dry Run ===
+[i]   Pre-flight check: Can this volume be encrypted right now?
+
+--- Service Dependencies ---
+[OK]  BitLocker Drive Encryption Service (BDESVC): Manual / Stopped
+[OK]  TPM Base Services (TBS): Running
+[OK]  Remote Procedure Call (RPC) (RpcSs): Running
+[OK]  All required services are available.
+
+--- Volume State (manage-bde -status) ---
+[OK]  Conversion Status: Fully Decrypted
+       Volume is eligible for new encryption.
+[OK]  No key protectors found. Clean slate for fresh encryption.
+
+--- WMI Readiness (Win32_EncryptableVolume) ---
+[OK]  ConversionStatus: FullyDecrypted (code 0)
+       Volume is fully decrypted and eligible for encryption.
+[i]   ProtectionStatus: Off (code 0)
+
+--- BCD Integrity ---
+[OK]  Boot Manager device: partition=\Device\HarddiskVolume1
+[OK]  OS Loader ({current}) device: partition=C:
+[OK]  OS Loader ({current}) osdevice: partition=C:
+[OK]  All BCD paths are consistent. Boot configuration appears healthy.
+
+--- WinRE Health ---
+[OK]  Windows RE status: Enabled
+[OK]  Windows RE location: \\?\GLOBALROOT\device\harddisk0\partition4\Recovery\WindowsRE
+[OK]  BCD identifier: {f6e0fb30-...} (valid)
+
+--- PCR Validation Profile ---
+[i]   No TPM protector found on C:.
+       This is expected if the volume is not yet encrypted.
+
+--- Readiness Verdict ---
+RESULT: READY FOR ENCRYPTION. No blocking conditions detected.
+
+NEXT:   If WinRE disabled         -> run: reagentc /enable
+        If boot config broken      -> run: bcdboot C:\Windows /s S: /f UEFI
+        If ghost state detected    -> run: manage-bde -off C: (then re-encrypt)
+        If orphaned protectors     -> run: manage-bde -protectors -delete C: -type RecoveryPassword
+        If TPM issues              -> run BL002 BLTpmHealth
+        If hardware prerequisites  -> run BL003 BLHardwarePrereqs
+        If policy issues           -> run BL006 BLPolicyConflict
+        If all checks pass         -> system is ready for encryption
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By | BL008 Lane |
+|---|---|---|
+| Volume status (Get-BitLockerVolume, WMI snapshot) | BL001 | manage-bde -status CLI |
+| TPM health (Get-Tpm, tpmtool, Win32_Tpm) | BL002 | PCR binding via manage-bde -protectors |
+| Hardware prereqs (UEFI, Secure Boot, GPT) | BL003 | BCD integrity (bcdedit) |
+| Intune policy (dsregcmd, CSP registry) | BL004 | Not checked |
+| Escrow pipeline (FVE, AAD, connectivity) | BL005 | Not checked |
+| GPO vs MDM conflict (FVE vs PolicyManager) | BL006 | Not checked |
+| Event log timeline | BL007 | Not checked |
+
+#### Version History
+
+| Version | Changes |
+|---|---|
+| 1.0 | Initial build. 6 check groups: (0) Service dependency gate for BDESVC (not Disabled), TBS (not Disabled, preferably Running), RpcSs (must be Running). (1) Volume state via manage-bde -status C: parsing for Conversion Status (FullyDecrypted = eligible, FullyEncrypted + Protection Off = ghost state with manage-bde -off remediation, in-progress/paused = blocker), Percentage Encrypted (partial = blocker), Encryption Method (residual metadata warning on decrypted volume), Key Protectors (orphaned on decrypted volume = blocker). (2) WMI readiness via Win32_EncryptableVolume from ROOT/CIMV2/Security/MicrosoftVolumeEncryption namespace using read-only GetConversionStatus (ConversionStatus codes 0-5 with EncryptionPercentage) and GetProtectionStatus (ProtectionStatus codes 0-2). PrepareVolume NOT invoked (not read-only). (3) BCD integrity via bcdedit /enum all parsed into blocks: Boot Manager device validation, OS Loader {current}/{default} device and osdevice validation, unknown volume detection. (4) WinRE health via reagentc /info parsing: Windows RE status (Enabled required for silent encryption), Windows RE location (valid device path), BCD identifier (null GUID detection for severe BCD/WinRE linkage failure), CVE-2024-20666 context. (5) PCR validation via manage-bde -protectors -get C: parsing: TPM block identification, PCR profile analysis (7,11 = ideal Secure Boot binding; 0,2,4,11 = degraded OROM fallback). Single readiness verdict: READY / CONDITIONALLY READY / NOT READY with itemized blockers and warnings. |
+
+---
 ## Firewall Suite
 
 ### FW001 -- FWStatusTriage
