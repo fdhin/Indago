@@ -3057,6 +3057,445 @@ NEXT:   If platform outdated         -> force update via: MpCmdRun.exe -Signatur
 
 ---
 
+
+### DEF007 -- DEFEventAnalysis
+
+**Version:** 1.0
+**Category:** DefenderEndpoint
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Pulls and correlates Defender events to build a chronological timeline of protection state changes and threat activity. Translates error codes into plain English with scriptlet routing.
+
+This is the "what happened and when" diagnostic -- the final investigative tool before the DEF008 remediation script. After DEF001-DEF006 have identified *what* is wrong, DEF007 explains *when* it happened and *why*.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name DEFEventAnalysis
+Invoke-Indago -Name DEFEventAnalysis -Param1 "14"   # last 14 days
+```
+
+**Parameters:**
+
+| Parameter | Description | Default |
+|---|---|---|
+| Param1 | DaysBack -- number of days of event history to pull (1-90) | 7 |
+
+#### What It Checks
+
+##### Data Source
+
+DEF007 reads **event logs only** via `Get-WinEvent` with optimized `-FilterXPath` queries. It does NOT query WMI, registry, services, or `Get-Mp*` cmdlets -- those are the domain of DEF001-DEF006.
+
+| Log Channel | Purpose |
+|---|---|
+| `Microsoft-Windows-Windows Defender/Operational` | Primary: scans, definitions, threats, config changes |
+| `Application` (Source: `SecurityCenter`) | Security Center state changes and WMI sync errors |
+| `Microsoft-Windows-Windows Defender/WHC` | Health assessments and compliance telemetry (if available) |
+
+##### Section 1: Protection State Timeline
+
+Events from `Microsoft-Windows-Windows Defender/Operational`:
+
+| Event ID | Meaning |
+|---|---|
+| 1000 | Scan Started -- scan type and triggering user |
+| 1001 | Scan Completed -- duration, correlation with 1000 |
+| 1002 | Scan Cancelled -- flags patterns of aborted scans |
+| 1005 | Scan Failed -- engine crash or corruption, error code extraction |
+| 1150 | Service Healthy -- hourly heartbeat confirming engine operational |
+| 2000 | Definition Update Started |
+| 2001 | Definition Update Succeeded -- new version applied |
+| 2002 | Definition Update Failed -- error code extraction |
+| 5007 | Configuration Changed -- setting name and old/new value |
+
+| Condition | Verdict |
+|---|---|
+| Scan failed (Event 1005) | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/DEF007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "DEF007",
+    "Name": "DEFEventAnalysis",
+    "DisplayName": "Defender Event Log & Threat History Analysis",
+    "Category": "DefenderEndpoint",
+    "Description": "Pulls and correlates Defender events to build a timeline of protection state changes and threat activity. Queries Operational log for scan events (start/complete/cancel/fail), definition updates (success/fail), configuration changes (Event 5007), and service health heartbeats (Event 1150). Queries threat events (detection, remediation success/failure, quarantine operations) with ThreatStatusID decode and AdditionalActionsBitMask decode. Queries SecurityCenter events from Application log (Event 15/16/17) for state changes and WMI sync failures. Queries WHC log if available. Extracts HRESULTs from event payloads with 10-entry embedded translation map and scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["defender", "event-log", "timeline", "threats", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query WMI, registry, services, or Get-Mp* cmdlets (those are DEF001-DEF006 domain). 3 output sections: (1) Protection state timeline from Operational log: Event 1000 scan start, 1001 scan complete, 1002 scan cancelled, 1005 scan failed, 1150 service healthy heartbeat, 2000/2001/2002 definition update start/success/fail, 5007 configuration change. Summary statistics and notable events. (2) Threat activity: Event 1006/1116 detection, 1007/1117 action OK, 1008/1118/1119 action failed, 1009 quarantine restore, 1011 quarantine delete. ThreatStatusID decode (0-107 incl. 102 Quarantine Failed, 103 Remove Failed). AdditionalActionsBitMask decode (4=FullScan, 8=Reboot, 16=Manual, 32768=Offline). Up to 10 detections and all action failures shown. (2b) SecurityCenter events from Application log: Event 15 state change, 16 status update error (ghost AV), 17 validation failure (DC040780 WMI sync). (2c) WHC log if available with graceful fallback. (3) HRESULT summary: 10-entry embedded map (0x80508023/0x80508019/0x80070005/0x800106ba/0x80508007/0x80501001/0x80508014/0x80508017/0x8050A003/0x80508026) with plain-English translations and scriptlet routing. Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'DEF006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find DEF006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: DEF007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    def007 = [e for e in verify if e['Id'] == 'DEF007']
+    if def007:
+        print(f"DEF007 found. Name={def007[0]['Name']}, Script={len(def007[0]['Script'])} chars")
+    else:
+        print("ERROR: DEF007 not found after insertion")
+PYEOF]` With HRESULT extraction |
+| >= 3 scan cancellations | `[]` Pattern of aborted scans |
+| Definition update failed (Event 2002) | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/DEF007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "DEF007",
+    "Name": "DEFEventAnalysis",
+    "DisplayName": "Defender Event Log & Threat History Analysis",
+    "Category": "DefenderEndpoint",
+    "Description": "Pulls and correlates Defender events to build a timeline of protection state changes and threat activity. Queries Operational log for scan events (start/complete/cancel/fail), definition updates (success/fail), configuration changes (Event 5007), and service health heartbeats (Event 1150). Queries threat events (detection, remediation success/failure, quarantine operations) with ThreatStatusID decode and AdditionalActionsBitMask decode. Queries SecurityCenter events from Application log (Event 15/16/17) for state changes and WMI sync failures. Queries WHC log if available. Extracts HRESULTs from event payloads with 10-entry embedded translation map and scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["defender", "event-log", "timeline", "threats", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query WMI, registry, services, or Get-Mp* cmdlets (those are DEF001-DEF006 domain). 3 output sections: (1) Protection state timeline from Operational log: Event 1000 scan start, 1001 scan complete, 1002 scan cancelled, 1005 scan failed, 1150 service healthy heartbeat, 2000/2001/2002 definition update start/success/fail, 5007 configuration change. Summary statistics and notable events. (2) Threat activity: Event 1006/1116 detection, 1007/1117 action OK, 1008/1118/1119 action failed, 1009 quarantine restore, 1011 quarantine delete. ThreatStatusID decode (0-107 incl. 102 Quarantine Failed, 103 Remove Failed). AdditionalActionsBitMask decode (4=FullScan, 8=Reboot, 16=Manual, 32768=Offline). Up to 10 detections and all action failures shown. (2b) SecurityCenter events from Application log: Event 15 state change, 16 status update error (ghost AV), 17 validation failure (DC040780 WMI sync). (2c) WHC log if available with graceful fallback. (3) HRESULT summary: 10-entry embedded map (0x80508023/0x80508019/0x80070005/0x800106ba/0x80508007/0x80501001/0x80508014/0x80508017/0x8050A003/0x80508026) with plain-English translations and scriptlet routing. Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'DEF006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find DEF006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: DEF007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    def007 = [e for e in verify if e['Id'] == 'DEF007']
+    if def007:
+        print(f"DEF007 found. Name={def007[0]['Name']}, Script={len(def007[0]['Script'])} chars")
+    else:
+        print("ERROR: DEF007 not found after insertion")
+PYEOF]` With HRESULT extraction |
+| No definition updates in time window | `[]` Definitions may be stale |
+| Configuration changes detected (Event 5007) | `[]` Up to 5 most recent shown |
+| No health heartbeats (Event 1150) | `[]` Engine may not be running |
+| Healthy state | `[OK]` |
+
+##### Section 2: Threat Activity
+
+Events from `Microsoft-Windows-Windows Defender/Operational`:
+
+| Event ID | Meaning |
+|---|---|
+| 1006 | Malware Detected -- threat name, severity, path |
+| 1007 | Action Taken (cleaned) |
+| 1008 | Action Failed -- critical, degraded state |
+| 1009 | Quarantine Restored -- item restored by user |
+| 1011 | Quarantine Deleted -- item permanently purged |
+| 1116 | Threat Detected (variant) |
+| 1117 | Action Performed (variant) |
+| 1118 | Action Failed (variant) |
+| 1119 | Action Critical Failure |
+
+**ThreatStatusID decode table (embedded):**
+
+| ID | Status | Verdict |
+|---|---|---|
+| 0 | Unknown | `[]` |
+| 1 | Detected | `[]` Awaiting action |
+| 2 | Cleaned | `[OK]` |
+| 3 | Quarantined | `[OK]` |
+| 4 | Removed | `[OK]` |
+| 5 | Allowed | `[]` Verify intentional |
+| 6 | Blocked | `[OK]` |
+| 102 | Quarantine Failed | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/DEF007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "DEF007",
+    "Name": "DEFEventAnalysis",
+    "DisplayName": "Defender Event Log & Threat History Analysis",
+    "Category": "DefenderEndpoint",
+    "Description": "Pulls and correlates Defender events to build a timeline of protection state changes and threat activity. Queries Operational log for scan events (start/complete/cancel/fail), definition updates (success/fail), configuration changes (Event 5007), and service health heartbeats (Event 1150). Queries threat events (detection, remediation success/failure, quarantine operations) with ThreatStatusID decode and AdditionalActionsBitMask decode. Queries SecurityCenter events from Application log (Event 15/16/17) for state changes and WMI sync failures. Queries WHC log if available. Extracts HRESULTs from event payloads with 10-entry embedded translation map and scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["defender", "event-log", "timeline", "threats", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query WMI, registry, services, or Get-Mp* cmdlets (those are DEF001-DEF006 domain). 3 output sections: (1) Protection state timeline from Operational log: Event 1000 scan start, 1001 scan complete, 1002 scan cancelled, 1005 scan failed, 1150 service healthy heartbeat, 2000/2001/2002 definition update start/success/fail, 5007 configuration change. Summary statistics and notable events. (2) Threat activity: Event 1006/1116 detection, 1007/1117 action OK, 1008/1118/1119 action failed, 1009 quarantine restore, 1011 quarantine delete. ThreatStatusID decode (0-107 incl. 102 Quarantine Failed, 103 Remove Failed). AdditionalActionsBitMask decode (4=FullScan, 8=Reboot, 16=Manual, 32768=Offline). Up to 10 detections and all action failures shown. (2b) SecurityCenter events from Application log: Event 15 state change, 16 status update error (ghost AV), 17 validation failure (DC040780 WMI sync). (2c) WHC log if available with graceful fallback. (3) HRESULT summary: 10-entry embedded map (0x80508023/0x80508019/0x80070005/0x800106ba/0x80508007/0x80501001/0x80508014/0x80508017/0x8050A003/0x80508026) with plain-English translations and scriptlet routing. Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'DEF006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find DEF006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: DEF007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    def007 = [e for e in verify if e['Id'] == 'DEF007']
+    if def007:
+        print(f"DEF007 found. Name={def007[0]['Name']}, Script={len(def007[0]['Script'])} chars")
+    else:
+        print("ERROR: DEF007 not found after insertion")
+PYEOF]` Degraded -- manual intervention |
+| 103 | Remove Failed | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/DEF007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "DEF007",
+    "Name": "DEFEventAnalysis",
+    "DisplayName": "Defender Event Log & Threat History Analysis",
+    "Category": "DefenderEndpoint",
+    "Description": "Pulls and correlates Defender events to build a timeline of protection state changes and threat activity. Queries Operational log for scan events (start/complete/cancel/fail), definition updates (success/fail), configuration changes (Event 5007), and service health heartbeats (Event 1150). Queries threat events (detection, remediation success/failure, quarantine operations) with ThreatStatusID decode and AdditionalActionsBitMask decode. Queries SecurityCenter events from Application log (Event 15/16/17) for state changes and WMI sync failures. Queries WHC log if available. Extracts HRESULTs from event payloads with 10-entry embedded translation map and scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["defender", "event-log", "timeline", "threats", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query WMI, registry, services, or Get-Mp* cmdlets (those are DEF001-DEF006 domain). 3 output sections: (1) Protection state timeline from Operational log: Event 1000 scan start, 1001 scan complete, 1002 scan cancelled, 1005 scan failed, 1150 service healthy heartbeat, 2000/2001/2002 definition update start/success/fail, 5007 configuration change. Summary statistics and notable events. (2) Threat activity: Event 1006/1116 detection, 1007/1117 action OK, 1008/1118/1119 action failed, 1009 quarantine restore, 1011 quarantine delete. ThreatStatusID decode (0-107 incl. 102 Quarantine Failed, 103 Remove Failed). AdditionalActionsBitMask decode (4=FullScan, 8=Reboot, 16=Manual, 32768=Offline). Up to 10 detections and all action failures shown. (2b) SecurityCenter events from Application log: Event 15 state change, 16 status update error (ghost AV), 17 validation failure (DC040780 WMI sync). (2c) WHC log if available with graceful fallback. (3) HRESULT summary: 10-entry embedded map (0x80508023/0x80508019/0x80070005/0x800106ba/0x80508007/0x80501001/0x80508014/0x80508017/0x8050A003/0x80508026) with plain-English translations and scriptlet routing. Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'DEF006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find DEF006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: DEF007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    def007 = [e for e in verify if e['Id'] == 'DEF007']
+    if def007:
+        print(f"DEF007 found. Name={def007[0]['Name']}, Script={len(def007[0]['Script'])} chars")
+    else:
+        print("ERROR: DEF007 not found after insertion")
+PYEOF]` Degraded -- manual intervention |
+| 104 | Allow Failed | `[]` |
+| 105 | Abandoned | `[]` |
+| 107 | Blocked Failed | `[python3 << 'PYEOF'
+import json
+
+with open('/tmp/DEF007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+entry = {
+    "Id": "DEF007",
+    "Name": "DEFEventAnalysis",
+    "DisplayName": "Defender Event Log & Threat History Analysis",
+    "Category": "DefenderEndpoint",
+    "Description": "Pulls and correlates Defender events to build a timeline of protection state changes and threat activity. Queries Operational log for scan events (start/complete/cancel/fail), definition updates (success/fail), configuration changes (Event 5007), and service health heartbeats (Event 1150). Queries threat events (detection, remediation success/failure, quarantine operations) with ThreatStatusID decode and AdditionalActionsBitMask decode. Queries SecurityCenter events from Application log (Event 15/16/17) for state changes and WMI sync failures. Queries WHC log if available. Extracts HRESULTs from event payloads with 10-entry embedded translation map and scriptlet routing.",
+    "ExecutionContext": "System",
+    "Parameters": {
+        "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+    },
+    "Script": script_body,
+    "Tags": ["defender", "event-log", "timeline", "threats", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. Event logs only -- does NOT query WMI, registry, services, or Get-Mp* cmdlets (those are DEF001-DEF006 domain). 3 output sections: (1) Protection state timeline from Operational log: Event 1000 scan start, 1001 scan complete, 1002 scan cancelled, 1005 scan failed, 1150 service healthy heartbeat, 2000/2001/2002 definition update start/success/fail, 5007 configuration change. Summary statistics and notable events. (2) Threat activity: Event 1006/1116 detection, 1007/1117 action OK, 1008/1118/1119 action failed, 1009 quarantine restore, 1011 quarantine delete. ThreatStatusID decode (0-107 incl. 102 Quarantine Failed, 103 Remove Failed). AdditionalActionsBitMask decode (4=FullScan, 8=Reboot, 16=Manual, 32768=Offline). Up to 10 detections and all action failures shown. (2b) SecurityCenter events from Application log: Event 15 state change, 16 status update error (ghost AV), 17 validation failure (DC040780 WMI sync). (2c) WHC log if available with graceful fallback. (3) HRESULT summary: 10-entry embedded map (0x80508023/0x80508019/0x80070005/0x800106ba/0x80508007/0x80501001/0x80508014/0x80508017/0x8050A003/0x80508026) with plain-English translations and scriptlet routing. Configurable time window via Param1."
+}
+
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'DEF006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find DEF006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: DEF007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    def007 = [e for e in verify if e['Id'] == 'DEF007']
+    if def007:
+        print(f"DEF007 found. Name={def007[0]['Name']}, Script={len(def007[0]['Script'])} chars")
+    else:
+        print("ERROR: DEF007 not found after insertion")
+PYEOF]` Degraded |
+
+**AdditionalActionsBitMask decode:**
+
+| Bit | Meaning |
+|---|---|
+| 4 | Full Scan Required |
+| 8 | Reboot Required |
+| 16 | Manual Steps Required |
+| 32768 | Offline Scan Required |
+
+Up to 10 detections and all action failures are shown in the output.
+
+##### Section 2b: Security Center Events
+
+Events from `Application` log (Source: `SecurityCenter`):
+
+| Event ID | Meaning |
+|---|---|
+| 15 | State change logged |
+| 16 | Error updating status -- often ghost AV related |
+| 17 | Validation failure (DC040780) -- WMI sync issue |
+
+##### Section 2c: WHC Log
+
+Queries `Microsoft-Windows-Windows Defender/WHC` if available. Gracefully skips if the channel does not exist. Extracts HRESULTs from WHC events for inclusion in the error summary.
+
+##### Section 3: HRESULT Error Code Summary
+
+HRESULTs are extracted from all event payloads via regex `0x[0-9A-Fa-f]{8}`. Unique codes are listed with translations and routing:
+
+| Code | Symbolic Name | Translation | Routing |
+|---|---|---|---|
+| `0x80508023` | ERR_MP_THREAT_NOT_FOUND | Threat resolved before engine could act | info |
+| `0x80508019` | ERR_MP_NOT_FOUND | Internal engine rollback/failure | DEF006 |
+| `0x80070005` | E_ACCESSDENIED | Access denied -- Tamper Protection or permissions | DEF004 |
+| `0x800106ba` | RPC_S_SERVER_UNAVAILABLE | WinDefend service crashed | DEF001 |
+| `0x80508007` | ERR_MP_NO_MEMORY | Memory exhaustion during scan/update | system resources |
+| `0x80501001` | ERROR_MP_ACTIONS_FAILED | Remediation action failed | full/offline scan |
+| `0x80508014` | ERROR_MP_RESTORE_FAILED | Quarantine restore failed | info |
+| `0x80508017` | ERROR_MP_REMOVE_FAILED | Threat removal failed -- file locked | offline scan |
+| `0x8050A003` | SCAN_ABORTED | Scan aborted -- resource conflict/timeout | retry scan |
+| `0x80508026` | ENGINE_UPDATE_FAILED | Engine update failed | DEF006 |
+
+#### Example Output (Healthy Endpoint, No Threats)
+
+```
+=== Defender Event Log & Threat History Analysis ===
+[i]   Time Window: last 7 day(s)
+       Cutoff: 2026-03-28 22:19:00
+
+--- Protection State Timeline ---
+[i]   Protection Event Summary
+       42 protection event(s) in the last 7 day(s): 7 scan start, 7 scan complete,
+       0 scan cancelled, 0 scan failed, 14 def update OK, 0 def update fail,
+       0 config change, 14 health heartbeat.
+[OK]  Definition Updates
+       14 successful update(s). Last: 2026-04-04 21:15:00. No failures.
+[OK]  Service Health Heartbeat (Event 1150)
+       14 heartbeat(s). Last: 2026-04-04 21:00:00. Engine and platform confirmed operational.
+
+--- Threat Activity ---
+[OK]  Threat Events
+       No threat activity events in the last 7 day(s). No malware detected.
+
+--- Security Center Events ---
+[OK]  Security Center Events
+       No SecurityCenter error events in the last 7 day(s).
+
+--- Error Code Summary ---
+[OK]  Error Codes
+       No HRESULT error codes extracted from events. No known error conditions.
+
+RESULT: No issues detected in Defender event timeline. Protection state healthy.
+
+NEXT:   If active threats unresolved  -> run a full scan: Start-MpScan -ScanType FullScan
+        If definition rollback         -> force update: Update-MpSignature
+        If platform/engine errors      -> run DEF006 DEFPlatformVersion
+        If access denied errors        -> run DEF004 DEFRealtimeProtection (Tamper Protection)
+        If service crashed             -> run DEF001 DEFStatusTriage
+        Escalate timeline to security team if threats were detected.
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---|---|
+| Point-in-time AV status (RTP, mode, definitions age) | DEF001 DEFStatusTriage |
+| Definition update pipeline (source, CDN, tasks) | DEF002 DEFDefinitionHealth |
+| Third-party AV conflicts, ghost registrations | DEF003 DEFThirdPartyAV |
+| RTP sub-components, Tamper Protection, exclusions, ASR | DEF004 DEFRealtimeProtection |
+| Policy conflicts (GPO/MDM/Local side-by-side) | DEF005 DEFPolicyConflict |
+| Platform/engine/NIS versions, update channel | DEF006 DEFPlatformVersion |
+| Remediation and recovery actions | DEF008 DEFRemediation |
+
+**Non-overlap notes:**
+- DEF007 reads *event logs only*. It does NOT query WMI, registry, services, or Get-Mp* cmdlets.
+- DEF002 checks definition update *pipeline configuration*. DEF007 checks definition update *events* (success/fail with timestamps).
+- DEF004 reads RTP sub-component *state*. DEF007 reads configuration change *events* (Event 5007).
+- DEF006 reads component *versions*. DEF007 reads platform update *error codes* and routes to DEF006.
+
+#### Version History
+
+| Version | Changes |
+|---|---|
+| 1.0 | Initial build. 3 output sections + 2 supplementary. (1) Protection state timeline from Operational log: Event 1000/1001/1002/1005 scan lifecycle, Event 1150 service healthy heartbeat, Event 2000/2001/2002 definition update lifecycle, Event 5007 configuration change. Summary statistics with notable event detail (up to 5 config changes shown). (2) Threat activity: Event 1006/1116 detection (up to 10 shown with threat name/severity extraction), Event 1007/1117 action OK, Event 1008/1118/1119 action failed (all shown), Event 1009 quarantine restore, Event 1011 quarantine delete. ThreatStatusID decode (12 statuses: 0 Unknown through 107 Blocked Failed, including 102 Quarantine Failed, 103 Remove Failed). AdditionalActionsBitMask decode (4/8/16/32768). (2b) SecurityCenter events from Application log: Event 15 state change, Event 16 status update error, Event 17 validation failure. (2c) WHC log with graceful fallback if channel unavailable. (3) HRESULT summary: regex extraction from all event payloads, 10-entry embedded translation map with scriptlet routing. Configurable time window via Param1 (default 7, max 90). |
+
+---
 ## BitLocker Suite
 
 ### BL001 -- BLStatusSnapshot
