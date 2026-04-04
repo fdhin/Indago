@@ -1655,6 +1655,202 @@ NEXT:   If disabled by GPO         -> run DEF005 DEFPolicyConflict to identify t
 
 ---
 
+### DEF005 -- DEFPolicyConflict
+
+**Version:** 1.0
+**Category:** DefenderEndpoint
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Detects policy source conflicts where GPO, Intune/MDM, and local preferences disagree on critical Defender settings. `Get-MpPreference` shows the effective merged result but never tells the tech **who set it** or whether two management systems are fighting. DEF005 answers: "For each critical Defender setting, what does GPO say, what does MDM say, and do they agree?"
+
+This is the Defender equivalent of the firewall and BitLocker policy conflict scripts -- same side-by-side philosophy applied to the Defender surface area.
+
+> **Key insight:** In GPO-to-Intune migrations, many organizations set `MDMWinsOverGP = 1` believing it covers all settings. It does NOT apply to Defender CSP settings. DEF005 catches this exact misconfiguration.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name DEFPolicyConflict
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- Core Protection Settings (Side-by-Side)
+
+Reads 9 critical Defender settings from all 3 policy sources and displays side-by-side. Flags conflicts with `[!!]` and dangerous GPO overrides.
+
+**Registry paths queried:**
+- **GPO:** `HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender` + subkeys
+- **MDM:** `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Defender`
+- **Local/Effective:** `Get-MpPreference`
+
+**Settings covered:**
+
+| Setting | GPO Value | MDM Value |
+|---|---|---|
+| Real-Time Protection | `DisableRealtimeMonitoring` | `AllowRealtimeMonitoring` |
+| Behavior Monitoring | `DisableBehaviorMonitoring` | `AllowBehaviorMonitoring` |
+| IOAV Protection | `DisableIOAVProtection` | `AllowIOAVProtection` |
+| Cloud Protection (MAPS) | `SpynetReporting` | `AllowCloudProtection` |
+| Sample Submission | `SubmitSamplesConsent` | `SubmitSamplesConsent` |
+| Network Protection | `EnableNetworkProtection` | `EnableNetworkProtection` |
+| PUA Protection | `PUAProtection` | `PUAProtection` |
+| Controlled Folder Access | `EnableControlledFolderAccess` | `EnableControlledFolderAccess` |
+| Scan Schedule Day | `ScanScheduleDay` | `ScanScheduleDay` |
+
+**Conflict detection:**
+- GPO and MDM both set but disagree -> `[!!]` CONFLICT
+- GPO disables critical protection (RTP, Behavior, IOAV, Cloud) -> `[!!]` DANGEROUS
+- Only one source sets a value -> `[OK]` with details
+- Neither sets a value -> `[OK]` using defaults
+
+**GPO inversion handling:** GPO uses `Disable*` naming (1 = disabled) while MDM uses `Allow*` naming (1 = enabled). The script normalizes this to correctly detect when GPO `DisableRealtimeMonitoring = 1` conflicts with MDM `AllowRealtimeMonitoring = 1`.
+
+##### Check 2 -- Exclusion Source Comparison
+
+Reads exclusion counts from all 3 policy sources per type (paths, extensions, processes). Reports whether exclusions come from multiple sources and whether they merge.
+
+**Sources:**
+- **GPO:** `HKLM:\...\Windows Defender\Exclusions\Paths`, `\Extensions`, `\Processes`
+- **MDM:** `ExcludedPaths`, `ExcludedExtensions`, `ExcludedProcesses` at MDM path
+- **Effective:** `Get-MpPreference` -> `ExclusionPath`, `ExclusionExtension`, `ExclusionProcess`
+
+**Also checks:**
+- `DisableLocalAdminMerge` -- if = 1, local exclusions configured via `Set-MpPreference` or the GUI are silently ignored. Only GPO/MDM exclusions apply.
+
+| Condition | Verdict |
+|---|---|
+| Exclusions from single source | `[OK]` |
+| Exclusions from GPO AND MDM simultaneously | `[!]` Multi-source, review for conflicts |
+| `DisableLocalAdminMerge = 1` | `[!]` Local exclusions ignored |
+| `DisableLocalAdminMerge` not set or = 0 | `[OK]` Merge behavior (default) |
+
+> **Scope note:** DEF005 does NOT audit exclusions for dangerous patterns (that is DEF004 Check 4). DEF005 only answers "where are exclusions coming from, and is there a merge conflict?"
+
+##### Check 3 -- ASR Rule Source Comparison
+
+Reads ASR rule GUIDs and actions from GPO registry and compares against effective state from `Get-MpPreference`.
+
+| Condition | Verdict |
+|---|---|
+| No ASR rules configured | `[i]` |
+| GPO and effective actions agree | `[OK]` |
+| GPO action differs from effective action | `[!]` Possible MDM/local override |
+
+Reports conflicts by GUID short prefix (first 8 chars). Does not re-do full GUID-to-name mapping (that is DEF004 Check 5).
+
+##### Check 4 -- ForceDefenderPassiveMode
+
+Reads `HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection` -> `ForceDefenderPassiveMode`.
+
+| Condition | Verdict |
+|---|---|
+| = 1, no third-party AV in SecurityCenter2 | `[!!]` Defender forced passive with no protection |
+| = 1, third-party AV present | `[i]` Expected configuration |
+| = 0 | `[OK]` Explicitly active |
+| Not set | `[OK]` Security Center determines mode (default) |
+| SecurityCenter2 unavailable (Server) | `[!]` Cannot verify, manual confirmation needed |
+
+Third-party AV detection uses `ROOT\SecurityCenter2\AntiVirusProduct` with `productState` bitmask origin check (non-Microsoft = `0x0000` at bits 8-11).
+
+##### Check 5 -- MDMWinsOverGP Assessment
+
+Reads `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\ControlPolicyConflict` -> `MDMWinsOverGP`.
+
+| Condition | Verdict |
+|---|---|
+| = 1, GPO Defender settings exist | `[!!]` FALSE SENSE OF SECURITY -- does NOT apply to Defender CSP |
+| = 1, no GPO Defender settings | `[i]` Set but no conflicts |
+| Not set or = 0 | `[OK]` Standard GPO precedence |
+
+> **Critical architectural fact:** `MDMWinsOverGP` only applies to settings governed by the **Policy CSP**. It explicitly does NOT apply to settings managed by the **Defender CSP**. Even with `MDMWinsOverGP = 1`, a legacy GPO setting like `DisableRealtimeMonitoring = 1` will override Intune. This check catches this exact misconfiguration.
+
+#### Example Output (Healthy System, Intune-Managed)
+
+```
+=== Defender Policy Source Conflict Detection ===
+
+--- Core Protection Settings ---
+[OK]  Real-Time Protection
+       GPO: Not set. MDM: AllowRealtimeMonitoring = 1. Effective: Enabled.
+[OK]  Behavior Monitoring
+       GPO: Not set. MDM: AllowBehaviorMonitoring = 1. Effective: Enabled.
+[OK]  IOAV Protection
+       GPO: Not set. MDM: Not set. Effective: Enabled.
+[OK]  Cloud Protection (MAPS)
+       GPO: Not set. MDM: AllowCloudProtection = 1. Effective: 2.
+[OK]  Sample Submission
+       GPO: Not set. MDM: SubmitSamplesConsent = 3. Effective: 3.
+[OK]  Network Protection
+       GPO: Not set. MDM: EnableNetworkProtection = 1. Effective: 1.
+[OK]  PUA Protection
+       GPO: Not set. MDM: PUAProtection = 1. Effective: 1.
+[OK]  Controlled Folder Access
+       GPO: Not set. MDM: Not set. Effective: 0.
+[OK]  Scan Schedule Day
+       GPO: Not set. MDM: Not set. Effective: 0 (Everyday).
+
+--- Exclusion Source Comparison ---
+[OK]  Path Exclusions
+       GPO: 0. MDM: 0. Effective: 0.
+[OK]  Extension Exclusions
+       GPO: 0. MDM: 0. Effective: 0.
+[OK]  Process Exclusions
+       GPO: 0. MDM: 0. Effective: 0.
+[OK]  DisableLocalAdminMerge
+       Not set or = 0. Local exclusions merge with GPO/MDM (default).
+
+--- ASR Rule Source Comparison ---
+[i]   ASR Rules: Not configured
+       No ASR rules found in GPO or effective policy.
+
+--- ForceDefenderPassiveMode ---
+[OK]  ForceDefenderPassiveMode
+       Not set. Defender mode determined by Security Center (default behavior).
+
+--- MDMWinsOverGP Assessment ---
+[OK]  MDMWinsOverGP
+       Not set or = 0. GPO takes precedence over MDM (default behavior).
+
+RESULT: No policy conflicts detected. GPO, MDM, and local settings are consistent.
+
+NEXT:   If GPO conflicts found      -> remove conflicting GPO or migrate settings to Intune
+        If ForcePassiveMode set      -> remove if no third-party AV is present
+        If MDMWinsOverGP misleading  -> remove conflicting Defender GPO settings manually
+        If exclusion merge conflict  -> review DisableLocalAdminMerge setting
+        If no conflicts              -> run DEF006 DEFPlatformVersion to check platform health
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---|---|
+| AV running mode, Security Center bitmask, services, MDE sensor, signal gap | DEF001 DEFStatusTriage |
+| Definition update sources, WSUS/MMPC config, connectivity | DEF002 DEFDefinitionHealth |
+| Third-party AV remnants, ghost registrations, DisableAntiSpyware/DisableAntiVirus | DEF003 DEFThirdPartyAV |
+| RTP sub-component source attribution, Tamper Protection, exclusion dangerous patterns, ASR GUID-to-name | DEF004 DEFRealtimeProtection |
+| Platform/engine version comparison against known-good | DEF006 DEFPlatformVersion |
+| Event log timeline, threat history, error codes | DEF007 DEFEventAnalysis |
+| Service reset, ghost cleanup, remediation | DEF008 DEFRemediation |
+
+**Overlap notes:**
+- DEF004 checks `Disable*` registry values to answer "who disabled RTP?". DEF005 displays the same values side-by-side across all 3 sources to answer "do GPO and MDM agree on RTP?" Different question, complementary answers.
+- DEF003 Check 4 checks `DisableAntiSpyware`/`DisableAntiVirus` (engine-level kill switches). DEF005 does NOT include these -- they are not policy-configurable Defender settings.
+- DEF004 Check 4 audits exclusions for dangerous patterns. DEF005 Check 2 audits exclusion sources. No overlap.
+
+#### Version History
+
+| Version | Changes |
+|---|---|
+| 1.0 | Initial build. 5 check groups: core protection settings side-by-side across GPO/MDM/Local for 9 settings (RTP, BehaviorMonitor, IOAV, MAPS, SampleSubmission, NetworkProtection, PUA, ControlledFolderAccess, ScanScheduleDay) with GPO inversion handling (Disable* vs Allow*), conflict detection, and dangerous pattern flagging. Exclusion source comparison (GPO/MDM/Local counts for paths, extensions, processes, plus DisableLocalAdminMerge). ASR rule source comparison (GPO vs effective action per GUID). ForceDefenderPassiveMode with SecurityCenter2 third-party AV cross-reference. MDMWinsOverGP assessment with Defender CSP limitation warning. |
+
+---
+
 ## BitLocker Suite
 
 ### BL001 -- BLStatusSnapshot

@@ -167,6 +167,7 @@ Scriptlets are pre-built PowerShell tasks stored in `Scriptlets/ScriptletCatalog
 | DEF002 | `DEFDefinitionHealth` | DefenderEndpoint | System | Definition update source tracing, staleness analysis, fallback chain validation, MMPC connectivity, and scheduled update task health |
 | DEF003 | `DEFThirdPartyAV` | DefenderEndpoint | System | Third-party AV conflict detection, ghost Security Center registrations, 10-vendor remnant scan (registry, services, drivers), and DisableAntiSpyware/DisableAntiVirus policy override detection |
 | DEF004 | `DEFRealtimeProtection` | DefenderEndpoint | System | RTP sub-component breakdown with source attribution, Tamper Protection diagnostics, MsMpEng.exe process health, exclusion audit with dangerous pattern detection, and ASR rule inventory |
+| DEF005 | `DEFPolicyConflict` | DefenderEndpoint | System | Side-by-side GPO vs MDM vs Local comparison for 9 Defender settings, exclusion source comparison, ASR rule source conflicts, ForceDefenderPassiveMode validation, and MDMWinsOverGP assessment |
 | APP001 | `WingetUpgradeSystemSilent` | Applications | System | Runs winget upgrade --all as SYSTEM to silently update all machine-wide installed applications |
 | APP002 | `WingetUpgradeUserApps` | Applications | User | Runs winget upgrade --all --scope user as the logged-on user to update user-scoped applications |
 | INT001 | `IntuneForceComplianceCheck` | Intune | System | Triggers a forced Intune compliance evaluation via the Intune Management Extension agent |
