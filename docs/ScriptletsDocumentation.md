@@ -2573,6 +2573,208 @@ NEXT:   If not MDM enrolled       -> re-enroll the device in Intune
 
 ---
 
+### BL005 -- BLEscrowCheck
+
+**Version:** 1.0
+**Category:** BitLocker
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Traces the recovery key escrow pipeline when BitLocker encryption silently fails. The sneakiest failure mode: Intune requires encryption, BitLocker activates, tries to escrow the recovery key to Entra ID, the escrow fails silently, and BitLocker **rolls back encryption** -- invisible unless you specifically look for it.
+
+BL001 catches the downstream symptom ("volume not encrypted" or "no recovery key"). BL005 diagnoses the **escrow pipeline itself**: Is escrow required by policy? Can the device authenticate to Entra? Has escrow been attempted, and what happened? Can the machine reach the cloud endpoints?
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name BLEscrowCheck
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- Escrow Policy Requirements
+
+Reads the FVE registry hive to determine whether the escrow gate is active -- meaning encryption is blocked until the recovery key is successfully backed up.
+
+**Registry path:** `HKLM:\SOFTWARE\Policies\Microsoft\FVE`
+
+| Value | Meaning | Verdict |
+|---|---|---|
+| `OSRequireActiveDirectoryBackup` = 1 | OS drive encryption BLOCKED until key is escrowed | `[i]` (escalated to `[!!]` CRITICAL if escrow has failed in Check 3) |
+| `OSRequireActiveDirectoryBackup` = 0 or not set | Escrow not required for encryption to proceed | `[OK]` |
+| `FDVRequireActiveDirectoryBackup` = 1 | Fixed data drives also gated by escrow | `[i]` informational |
+| `OSActiveDirectoryInfoToStore` | 1 = key + packages (forensic), 2 = password only | `[i]` informational |
+
+> **Why this matters:** When `OSRequireActiveDirectoryBackup = 1` and escrow fails, BitLocker is architecturally blocked -- encryption will never begin. The OS silently rolls back any encryption attempt, generating Event 778 (rollback) and Event 851 (silent encryption failed).
+
+##### Check 2 -- AAD Device Registration & Identity Health
+
+Executes `dsregcmd.exe /status` and parses **escrow-relevant** identity fields (not the enrollment fields BL004 already covers).
+
+| Field | What BL005 Checks | Verdict |
+|---|---|---|
+| `AzureAdJoined` | Is cloud escrow structurally possible? | `[OK]` YES, `[!!]` NO |
+| `AzureAdPrt` | Primary Refresh Token present for background auth? | `[OK]` YES, `[!!]` NO |
+| `DeviceAuthStatus` | Can the device authenticate to Entra? | `[OK]` SUCCESS, `[!!]` FAILED (zombie) |
+| `TpmProtected` | Identity key stored in hardware TPM? | `[OK]` YES, `[!]` NO |
+| `TenantId` | Which Entra tenant receives the escrow | `[i]` informational |
+
+**Zombie PRT detection:** If `AzureAdJoined = YES` but `DeviceAuthStatus = FAILED`, the device is in a "zombie" state -- it believes it's joined but its tokens are rejected by the cloud STS. Escrow transmissions will be rejected. Reports `[!!]` with `dsregcmd /leave` + `/join` guidance.
+
+> **Key distinction from BL004:** BL004 Check 1 reads `AzureAdJoined`, `DomainJoined`, `WorkplaceJoined`, `MdmUrl`, `DeviceId` (enrollment status). BL005 reads `AzureAdPrt`, `DeviceAuthStatus`, `TpmProtected`, `TenantId` (identity health for escrow). Completely different fields, complementary purpose.
+
+##### Check 3 -- Escrow Event History (Last 7 Days)
+
+Queries `Microsoft-Windows-BitLocker/BitLocker Management` for escrow-specific events.
+
+| Event ID | Category | What We Report |
+|---|---|---|
+| 845 | Success | Recovery key backed up to Entra ID. Timestamp + volume. |
+| 846 | Failure | Escrow **FAILED**. Timestamp + HRESULT from message body. |
+| 851 | Failure | Silent encryption failed (downstream of 846 when escrow gate active). |
+| 858 | Failure | Key rotation failed (device not ready / domain unreachable). |
+| 778 | Rollback | Volume reverted to unprotected state (encryption rolled back). |
+
+**HRESULT translation table (6 codes):**
+
+| HRESULT | Translation |
+|---|---|
+| `0x80072f9a` | SYSTEM lacks cert access or SSL inspection breaking Entra auth |
+| `0x80310059` | Overlapping operation -- GPO/MDM collision or filter driver interference |
+| `0x80072efe` | Connection aborted -- firewall, VPN, or proxy dropped payload |
+| `0x8007054B` | DNS failure -- cannot resolve Entra ID endpoint |
+| `0x80310018` | TPM not owned -- cannot generate Volume Master Key |
+| `0x803100B5` | No pre-boot keyboard or WinRE missing -- slate device block |
+
+**Critical escalation:** If Event 846 (escrow failed) is found AND `OSRequireActiveDirectoryBackup = 1`, reports `[!!]` CRITICAL -- encryption is architecturally blocked and will never start.
+
+**200-key limit hint:** If 3+ failures with zero successes in the 7-day window, notes the Entra ID 200-key hard limit as a possible cause (cannot be detected locally -- admin must check Entra portal).
+
+> **Key distinction from BL001:** BL001 Check 3 shows the single most recent BitLocker management event of any type. BL005 does a targeted multi-event search for 5 escrow-specific Event IDs over a 7-day window with HRESULT translation.
+
+##### Check 4 -- Escrow Endpoint Connectivity
+
+TCP 443 reachability test (3-second timeout) to cloud endpoints required for the escrow transmission. Since Indago runs as SYSTEM, these naturally test in the SYSTEM network context -- exactly how the real escrow operates.
+
+| Endpoint | Purpose | Verdict |
+|---|---|---|
+| `login.microsoftonline.com` | OAuth token acquisition for escrow auth | `[!!]` if unreachable |
+| `enterpriseregistration.windows.net` | Device Registration Service -- accepts the key payload | `[!!]` if unreachable |
+| `device.login.microsoftonline.com` | Device identity verification and compliance | `[!!]` if unreachable |
+
+##### Check 5 -- Recovery Key Protector Status
+
+Reads `Get-BitLockerVolume` for the OS volume and examines the `KeyProtector` array.
+
+- Lists all protectors by type (Tpm, RecoveryPassword, ExternalKey, etc.)
+- For each `RecoveryPassword` protector: extracts the `KeyProtectorId` GUID
+- Cross-references GUID against successful Event 845 messages from Check 3
+- Reports whether each recovery key has confirmed escrow evidence
+
+| Condition | Verdict |
+|---|---|
+| RecoveryPassword GUID found in Event 845 | `[OK]` Escrow confirmed |
+| RecoveryPassword GUID NOT found in Event 845 | `[!]` No escrow confirmation in last 7 days |
+| No RecoveryPassword protector exists | `[!!]` No key to escrow |
+| Volume not encrypted | `[i]` Key protectors not applicable |
+
+##### Check 6 -- WinRE Status (Lightweight)
+
+Executes `reagentc.exe /info` and parses for WinRE enabled/disabled status.
+
+| Condition | Verdict |
+|---|---|
+| WinRE Enabled | `[OK]` Silent encryption and key rotation prerequisites met |
+| WinRE Disabled | `[!!]` Silent encryption will fail (Event 854), key rotation will fail (Event 858) |
+| Could not query | `[!]` WinRE status unknown |
+
+> **Scope note:** This is a lightweight check -- just enabled/disabled. BL008 BLReadinessCheck does the full WinRE diagnostics (image path, partition, version).
+
+#### Example Output (Healthy Escrowed System)
+
+```
+=== Recovery Key Escrow Diagnostics ===
+
+--- Escrow Policy Requirements ---
+[i]   Escrow Policy: OSRequireActiveDirectoryBackup = 1
+       Encryption will NOT begin until the recovery key is backed up to AD/AAD.
+       If escrow fails, encryption is blocked indefinitely.
+
+--- AAD Device Registration & Identity Health ---
+[OK]  AzureAdJoined: YES
+       Device is joined to Entra ID. Cloud escrow is structurally possible.
+[OK]  AzureAdPrt: YES
+       Primary Refresh Token is present. Background auth to AAD will work.
+[OK]  DeviceAuthStatus: SUCCESS
+       Device can authenticate to Entra ID. Identity is healthy.
+[OK]  TpmProtected: YES
+       Device identity key is stored in hardware TPM. Secure.
+[i]   TenantId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+       Escrow will target this Entra ID tenant.
+
+--- Escrow Event History (Last 7 Days) ---
+[OK]  Escrow Success (Event 845): 1 in last 7 days
+       Last successful escrow: 2026-04-02 14:30.
+       Recovery key was backed up to Entra ID.
+
+--- Escrow Endpoint Connectivity ---
+[OK]  login.microsoftonline.com:443 -- Reachable
+       OAuth token acquisition for escrow authentication
+[OK]  enterpriseregistration.windows.net:443 -- Reachable
+       Device Registration Service -- accepts the key payload
+[OK]  device.login.microsoftonline.com:443 -- Reachable
+       Device identity verification and compliance checks
+
+--- Recovery Key Protector Status ---
+[i]   Key Protectors on C:: 2 total (Tpm, RecoveryPassword)
+[OK]  RecoveryPassword A1B2C3D4-E5F6-7890-ABCD-EF1234567890
+       Escrow confirmed -- Event 845 found for this key protector.
+
+--- WinRE Status ---
+[OK]  WinRE: Enabled
+       Windows Recovery Environment is active. Silent encryption and
+       key rotation prerequisites are met.
+
+RESULT: No escrow issues detected. Recovery key pipeline appears healthy.
+
+NEXT:   If escrow failed due to connectivity -> fix network (see WU003 WUNetworkCheck)
+        If device registration broken       -> run dsregcmd /leave then re-join
+        If escrow gate active + key missing  -> run BL009 BLTpmRemediation
+        If no escrow events + volume decrypted -> policy may not have triggered -- run BL004
+        If repeated 846 despite healthy state -> check Entra portal for 200-key limit
+        If WinRE disabled                    -> reagentc /enable or run BL008 BLReadinessCheck
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---|---|
+| Volume encryption status, ghost state, key protector presence, BDESVC | BL001 BLStatusSnapshot |
+| TPM presence, version, firmware, lockout, attestation | BL002 BLTpmHealth |
+| UEFI, Secure Boot, GPT/MBR, system partition, Modern Standby, OEM quirks | BL003 BLHardwarePrereqs |
+| MDM enrollment status, BitLocker CSP settings, policy-hardware comparison | BL004 BLIntunePolicy |
+| GPO vs MDM BitLocker policy conflict (FVE keys) | BL006 BLPolicyConflict |
+| Full event log timeline, comprehensive HRESULT translation | BL007 BLEventAnalysis |
+| Full WinRE diagnostics, manage-bde, readiness dry run | BL008 BLReadinessCheck |
+| Key protector cleanup, forced escrow, TPM remediation | BL009 BLTpmRemediation |
+
+**Overlap notes:**
+- BL001 Check 3 shows the single most recent BitLocker event. BL005 Check 3 does a targeted 7-day search for 5 escrow-specific Event IDs with HRESULT translation. No overlap.
+- BL004 Check 1 reads `dsregcmd` for enrollment fields (AzureAdJoined, DomainJoined, MdmUrl, DeviceId). BL005 Check 2 reads `dsregcmd` for identity health fields (AzureAdPrt, DeviceAuthStatus, TpmProtected, TenantId). Complementary, no duplicate fields.
+- BL004 Check 2 reads `PolicyManager\current\device\BitLocker` (MDM CSP). BL005 Check 1 reads `Policies\Microsoft\FVE` (GPO escrow gate). Different registry paths, different questions.
+
+#### Version History
+
+| Version | Changes |
+|---|---|
+| 1.0 | Initial build. 6 check groups: escrow policy requirements from FVE registry (OSRequireActiveDirectoryBackup gate, FDVRequireActiveDirectoryBackup, OSActiveDirectoryInfoToStore), AAD device registration via dsregcmd /status parsing for AzureAdPrt/DeviceAuthStatus/TpmProtected/TenantId with zombie PRT detection, escrow event history 7-day window for Event IDs 845/846/851/858/778 with 6-code HRESULT table and 200-key limit hint, escrow endpoint connectivity TCP 443 to login.microsoftonline.com + enterpriseregistration.windows.net + device.login.microsoftonline.com with 3-second timeout, recovery key protector status with GUID-to-Event 845 cross-reference for escrow confirmation, lightweight WinRE check via reagentc /info. |
+
+---
+
 ## Firewall Suite
 
 ### FW001 -- FWStatusTriage
