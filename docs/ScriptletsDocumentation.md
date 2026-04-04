@@ -1141,6 +1141,537 @@ NEXT:   Address the most common HRESULT listed above.
 | 1.0 | Initial build. 3 output sections: event summary statistics (total/success/failure/info counts with most common error code), chronological timeline from 3 sources capped at 50 most recent events (WindowsUpdateClient/Operational IDs 19/20/21/25/26/31/41/42/43/44, BITS-Client/Operational IDs 3/4/5/59/60/64, System log Microsoft-Windows-WindowsUpdateClient provider + Service Control Manager IDs 7031/7034/7036/7043 filtered for WU service names), HRESULT summary with 25-entry embedded translation map and scriptlet routing. Regex extraction pattern `0x[0-9A-Fa-f]{8}`. Configurable time window via Param1 (default 7 days). |
 
 
+
+### WU007 -- WUEnvironmentAudit
+
+**Version:** 1.0
+**Category:** WindowsUpdate
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Gathers the machine's software environment to identify third-party interference or eligibility issues that explain why Windows Update fails after all other diagnostics (WU001-WU006) have been cleared. This is the "what else is on this machine that might matter" check.
+
+WU007 answers: "Is the machine's software environment compatible with the update being applied?"
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name WUEnvironmentAudit
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- WU Agent Version
+
+Reads `AgentVersion` from `HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update` with `SetupVersion` fallback from the parent key.
+
+| Condition | Verdict |
+|---|---|
+| Agent version found | `[i]` Report version |
+| Agent version missing | `[]` Unable to determine version |
+
+##### Check 2 -- OS Edition, Build, UBR
+
+Reads from `HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion` for BuildNumber, UBR, DisplayVersion, EditionID, ProductName. Uses `Get-CimInstance Win32_OperatingSystem` as caption fallback. Reports full build string as `BuildNumber.UBR` (e.g., `22631.4890`).
+
+| Condition | Verdict |
+|---|---|
+| Standard edition/build | `[i]` Report edition, version, build.UBR |
+| LTSC/LTSB/Server edition | `[i]` Note servicing channel difference |
+
+##### Check 3 -- .NET Framework Version
+
+Reads `Release` DWORD from `HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full` and decodes using the official Microsoft mapping table:
+
+| Release Value | .NET Version | Status |
+|---|---|---|
+| >= 533325 | 4.8.1 | `[OK]` Modern |
+| >= 528040 | 4.8 | `[OK]` Modern |
+| >= 461808 | 4.7.2 | `[]` Aging |
+| >= 461308 | 4.7.1 | `[]` Aging |
+| >= 460798 | 4.7 | `[]` Aging |
+| >= 394802 | 4.6.2 | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/WU007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "WU007",
+    "Name": "WUEnvironmentAudit",
+    "DisplayName": "Windows Update Agent & Environment Audit",
+    "Category": "WindowsUpdate",
+    "Description": "Gathers the machine software environment to identify third-party interference or eligibility issues: WU agent version, OS edition/build/UBR with feature update eligibility table, .NET Framework version decode, PowerShell version, third-party AV detection with known WU-interference flagging, update management tool inventory (SCCM, Intune, PatchMyPC, WSUS, ManageEngine, Automox) with co-management detection, and Visual C++ prerequisite check.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["windows-update", "environment", "third-party", "av", "agent", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 8 check groups: (1) WU agent version from Auto Update and WindowsUpdate registry. (2) OS edition/build/UBR from NT CurrentVersion registry with CIM fallback, servicing channel detection for LTSC/Server. (3) .NET Framework version decode from NDP v4 Full Release DWORD with official Microsoft mapping table (4.5 through 4.8.1). (4) PowerShell and CLR version from PSVersionTable. (5) Feature update eligibility against hardcoded version table: Win10 2004-22H2, Win11 21H2-25H2, Win11 26H1 ARM64 (build 28000). Reports OK/EXT/EOS status with end-of-service dates. No internet queries. (6) Third-party AV detection via SecurityCenter2 WMI (workstations) + Uninstall registry scan with 10-vendor known-problematic interference table (Symantec/Kaspersky/McAfee/TrendMicro/ZoneAlarm/Webroot/Norton/Sophos/ESET/Bitdefender). (7) Update management tool inventory: SCCM ccmexec service, Intune MDM enrollment, PatchMyPC, ManageEngine, Automox, WSUS registry cross-reference, co-management conflict detection. (8) Visual C++ Redistributable presence check with modern vs legacy classification, pending .NET CBS package detection."
+}
+
+# Find insertion point -- after WU006
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'WU006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find WU006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: WU007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    wu007 = [e for e in verify if e['Id'] == 'WU007']
+    if wu007:
+        print(f"WU007 found. Name={wu007[0]['Name']}, Script={len(wu007[0]['Script'])} chars")
+    else:
+        print("ERROR: WU007 not found after insertion")
+PYEOF]` Outdated |
+| >= 394254 | 4.6.1 | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/WU007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "WU007",
+    "Name": "WUEnvironmentAudit",
+    "DisplayName": "Windows Update Agent & Environment Audit",
+    "Category": "WindowsUpdate",
+    "Description": "Gathers the machine software environment to identify third-party interference or eligibility issues: WU agent version, OS edition/build/UBR with feature update eligibility table, .NET Framework version decode, PowerShell version, third-party AV detection with known WU-interference flagging, update management tool inventory (SCCM, Intune, PatchMyPC, WSUS, ManageEngine, Automox) with co-management detection, and Visual C++ prerequisite check.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["windows-update", "environment", "third-party", "av", "agent", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 8 check groups: (1) WU agent version from Auto Update and WindowsUpdate registry. (2) OS edition/build/UBR from NT CurrentVersion registry with CIM fallback, servicing channel detection for LTSC/Server. (3) .NET Framework version decode from NDP v4 Full Release DWORD with official Microsoft mapping table (4.5 through 4.8.1). (4) PowerShell and CLR version from PSVersionTable. (5) Feature update eligibility against hardcoded version table: Win10 2004-22H2, Win11 21H2-25H2, Win11 26H1 ARM64 (build 28000). Reports OK/EXT/EOS status with end-of-service dates. No internet queries. (6) Third-party AV detection via SecurityCenter2 WMI (workstations) + Uninstall registry scan with 10-vendor known-problematic interference table (Symantec/Kaspersky/McAfee/TrendMicro/ZoneAlarm/Webroot/Norton/Sophos/ESET/Bitdefender). (7) Update management tool inventory: SCCM ccmexec service, Intune MDM enrollment, PatchMyPC, ManageEngine, Automox, WSUS registry cross-reference, co-management conflict detection. (8) Visual C++ Redistributable presence check with modern vs legacy classification, pending .NET CBS package detection."
+}
+
+# Find insertion point -- after WU006
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'WU006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find WU006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: WU007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    wu007 = [e for e in verify if e['Id'] == 'WU007']
+    if wu007:
+        print(f"WU007 found. Name={wu007[0]['Name']}, Script={len(wu007[0]['Script'])} chars")
+    else:
+        print("ERROR: WU007 not found after insertion")
+PYEOF]` Outdated |
+| < 394254 | 4.x | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/WU007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "WU007",
+    "Name": "WUEnvironmentAudit",
+    "DisplayName": "Windows Update Agent & Environment Audit",
+    "Category": "WindowsUpdate",
+    "Description": "Gathers the machine software environment to identify third-party interference or eligibility issues: WU agent version, OS edition/build/UBR with feature update eligibility table, .NET Framework version decode, PowerShell version, third-party AV detection with known WU-interference flagging, update management tool inventory (SCCM, Intune, PatchMyPC, WSUS, ManageEngine, Automox) with co-management detection, and Visual C++ prerequisite check.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["windows-update", "environment", "third-party", "av", "agent", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 8 check groups: (1) WU agent version from Auto Update and WindowsUpdate registry. (2) OS edition/build/UBR from NT CurrentVersion registry with CIM fallback, servicing channel detection for LTSC/Server. (3) .NET Framework version decode from NDP v4 Full Release DWORD with official Microsoft mapping table (4.5 through 4.8.1). (4) PowerShell and CLR version from PSVersionTable. (5) Feature update eligibility against hardcoded version table: Win10 2004-22H2, Win11 21H2-25H2, Win11 26H1 ARM64 (build 28000). Reports OK/EXT/EOS status with end-of-service dates. No internet queries. (6) Third-party AV detection via SecurityCenter2 WMI (workstations) + Uninstall registry scan with 10-vendor known-problematic interference table (Symantec/Kaspersky/McAfee/TrendMicro/ZoneAlarm/Webroot/Norton/Sophos/ESET/Bitdefender). (7) Update management tool inventory: SCCM ccmexec service, Intune MDM enrollment, PatchMyPC, ManageEngine, Automox, WSUS registry cross-reference, co-management conflict detection. (8) Visual C++ Redistributable presence check with modern vs legacy classification, pending .NET CBS package detection."
+}
+
+# Find insertion point -- after WU006
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'WU006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find WU006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: WU007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    wu007 = [e for e in verify if e['Id'] == 'WU007']
+    if wu007:
+        print(f"WU007 found. Name={wu007[0]['Name']}, Script={len(wu007[0]['Script'])} chars")
+    else:
+        print("ERROR: WU007 not found after insertion")
+PYEOF]` Outdated |
+
+##### Check 4 -- PowerShell Version
+
+Reports `$PSVersionTable.PSVersion` and `$PSVersionTable.CLRVersion`.
+
+| Condition | Verdict |
+|---|---|
+| PS 5.1+ | `[OK]` Expected version |
+| PS 5.0 | `[]` Below 5.1 |
+| PS < 5.0 | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/WU007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "WU007",
+    "Name": "WUEnvironmentAudit",
+    "DisplayName": "Windows Update Agent & Environment Audit",
+    "Category": "WindowsUpdate",
+    "Description": "Gathers the machine software environment to identify third-party interference or eligibility issues: WU agent version, OS edition/build/UBR with feature update eligibility table, .NET Framework version decode, PowerShell version, third-party AV detection with known WU-interference flagging, update management tool inventory (SCCM, Intune, PatchMyPC, WSUS, ManageEngine, Automox) with co-management detection, and Visual C++ prerequisite check.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["windows-update", "environment", "third-party", "av", "agent", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 8 check groups: (1) WU agent version from Auto Update and WindowsUpdate registry. (2) OS edition/build/UBR from NT CurrentVersion registry with CIM fallback, servicing channel detection for LTSC/Server. (3) .NET Framework version decode from NDP v4 Full Release DWORD with official Microsoft mapping table (4.5 through 4.8.1). (4) PowerShell and CLR version from PSVersionTable. (5) Feature update eligibility against hardcoded version table: Win10 2004-22H2, Win11 21H2-25H2, Win11 26H1 ARM64 (build 28000). Reports OK/EXT/EOS status with end-of-service dates. No internet queries. (6) Third-party AV detection via SecurityCenter2 WMI (workstations) + Uninstall registry scan with 10-vendor known-problematic interference table (Symantec/Kaspersky/McAfee/TrendMicro/ZoneAlarm/Webroot/Norton/Sophos/ESET/Bitdefender). (7) Update management tool inventory: SCCM ccmexec service, Intune MDM enrollment, PatchMyPC, ManageEngine, Automox, WSUS registry cross-reference, co-management conflict detection. (8) Visual C++ Redistributable presence check with modern vs legacy classification, pending .NET CBS package detection."
+}
+
+# Find insertion point -- after WU006
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'WU006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find WU006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: WU007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    wu007 = [e for e in verify if e['Id'] == 'WU007']
+    if wu007:
+        print(f"WU007 found. Name={wu007[0]['Name']}, Script={len(wu007[0]['Script'])} chars")
+    else:
+        print("ERROR: WU007 not found after insertion")
+PYEOF]` Below minimum for modern WU cmdlets |
+
+##### Check 5 -- Feature Update Eligibility
+
+Compares the current OS build number against a hardcoded lookup table. **No internet queries.** Table includes builds through Windows 11 26H1 (ARM64-only, build 28000).
+
+**Hardcoded version table:**
+
+| Build | Version | Product | Status |
+|---|---|---|---|
+| 19041 | 2004 | Win 10 | End of service |
+| 19042 | 20H2 | Win 10 | End of service |
+| 19043 | 21H1 | Win 10 | End of service |
+| 19044 | 21H2 | Win 10 | End of service |
+| 19045 | 22H2 | Win 10 | EOS (Home/Pro), Extended ESU (Enterprise) |
+| 22000 | 21H2 | Win 11 | End of service |
+| 22621 | 22H2 | Win 11 | Enterprise extended |
+| 22631 | 23H2 | Win 11 | In service |
+| 26100 | 24H2 | Win 11 | In service |
+| 26200 | 25H2 | Win 11 | In service (enablement package from 24H2) |
+| 28000 | 26H1 | Win 11 | In service (ARM64-only, Snapdragon X2) |
+
+| Condition | Verdict |
+|---|---|
+| Build in service | `[OK]` Receiving security updates |
+| Build approaching EOL | `[]` Plan feature update |
+| Build end of service | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/WU007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "WU007",
+    "Name": "WUEnvironmentAudit",
+    "DisplayName": "Windows Update Agent & Environment Audit",
+    "Category": "WindowsUpdate",
+    "Description": "Gathers the machine software environment to identify third-party interference or eligibility issues: WU agent version, OS edition/build/UBR with feature update eligibility table, .NET Framework version decode, PowerShell version, third-party AV detection with known WU-interference flagging, update management tool inventory (SCCM, Intune, PatchMyPC, WSUS, ManageEngine, Automox) with co-management detection, and Visual C++ prerequisite check.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["windows-update", "environment", "third-party", "av", "agent", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 8 check groups: (1) WU agent version from Auto Update and WindowsUpdate registry. (2) OS edition/build/UBR from NT CurrentVersion registry with CIM fallback, servicing channel detection for LTSC/Server. (3) .NET Framework version decode from NDP v4 Full Release DWORD with official Microsoft mapping table (4.5 through 4.8.1). (4) PowerShell and CLR version from PSVersionTable. (5) Feature update eligibility against hardcoded version table: Win10 2004-22H2, Win11 21H2-25H2, Win11 26H1 ARM64 (build 28000). Reports OK/EXT/EOS status with end-of-service dates. No internet queries. (6) Third-party AV detection via SecurityCenter2 WMI (workstations) + Uninstall registry scan with 10-vendor known-problematic interference table (Symantec/Kaspersky/McAfee/TrendMicro/ZoneAlarm/Webroot/Norton/Sophos/ESET/Bitdefender). (7) Update management tool inventory: SCCM ccmexec service, Intune MDM enrollment, PatchMyPC, ManageEngine, Automox, WSUS registry cross-reference, co-management conflict detection. (8) Visual C++ Redistributable presence check with modern vs legacy classification, pending .NET CBS package detection."
+}
+
+# Find insertion point -- after WU006
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'WU006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find WU006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: WU007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    wu007 = [e for e in verify if e['Id'] == 'WU007']
+    if wu007:
+        print(f"WU007 found. Name={wu007[0]['Name']}, Script={len(wu007[0]['Script'])} chars")
+    else:
+        print("ERROR: WU007 not found after insertion")
+PYEOF]` No longer receiving security updates |
+| Build not in table | `[i]` May be Server, Insider, or new build |
+
+##### Check 6 -- Third-Party AV / Security Software
+
+**Two-pronged detection:**
+- **SecurityCenter2 WMI** (`root/SecurityCenter2:AntiVirusProduct`) on workstations
+- **Uninstall registry scan** (`HKLM:\...\Uninstall` + WOW6432Node)
+
+**10-vendor known-problematic interference table:**
+
+| Product | WU Interference Mechanism |
+|---|---|
+| Symantec | File locks on SoftwareDistribution folder (0x80240022) |
+| Kaspersky | Web filter / CAPI2 certificate interception |
+| McAfee | CAPI2 hooking, authrootstl.cab extraction failure (Event ID 11) |
+| Trend Micro | Real-time scan blocks CBS file operations |
+| ZoneAlarm | CAPI2 certificate interception |
+| Webroot | Kernel driver file locks |
+| Norton | File locks and schedule conflicts |
+| Sophos | Web filter interference with BITS |
+| ESET | May delay BITS transfers during real-time scanning |
+| Bitdefender | Filter driver file locks in some versions |
+
+Also scans for CrowdStrike, SentinelOne, Carbon Black, Cylance, Malwarebytes, Avast, and AVG (not flagged as problematic but reported for awareness).
+
+> **Scope note:** DEF003 also queries SecurityCenter2 but for Defender coexistence analysis (bitmask decode, ghost registrations, remnant scan). WU007 does a lightweight AV detection focused specifically on Windows Update interference mechanisms. Different question, complementary answers.
+
+| Condition | Verdict |
+|---|---|
+| No third-party AV | `[OK]` Only Defender active |
+| Known-problematic AV | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/WU007_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "WU007",
+    "Name": "WUEnvironmentAudit",
+    "DisplayName": "Windows Update Agent & Environment Audit",
+    "Category": "WindowsUpdate",
+    "Description": "Gathers the machine software environment to identify third-party interference or eligibility issues: WU agent version, OS edition/build/UBR with feature update eligibility table, .NET Framework version decode, PowerShell version, third-party AV detection with known WU-interference flagging, update management tool inventory (SCCM, Intune, PatchMyPC, WSUS, ManageEngine, Automox) with co-management detection, and Visual C++ prerequisite check.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["windows-update", "environment", "third-party", "av", "agent", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 8 check groups: (1) WU agent version from Auto Update and WindowsUpdate registry. (2) OS edition/build/UBR from NT CurrentVersion registry with CIM fallback, servicing channel detection for LTSC/Server. (3) .NET Framework version decode from NDP v4 Full Release DWORD with official Microsoft mapping table (4.5 through 4.8.1). (4) PowerShell and CLR version from PSVersionTable. (5) Feature update eligibility against hardcoded version table: Win10 2004-22H2, Win11 21H2-25H2, Win11 26H1 ARM64 (build 28000). Reports OK/EXT/EOS status with end-of-service dates. No internet queries. (6) Third-party AV detection via SecurityCenter2 WMI (workstations) + Uninstall registry scan with 10-vendor known-problematic interference table (Symantec/Kaspersky/McAfee/TrendMicro/ZoneAlarm/Webroot/Norton/Sophos/ESET/Bitdefender). (7) Update management tool inventory: SCCM ccmexec service, Intune MDM enrollment, PatchMyPC, ManageEngine, Automox, WSUS registry cross-reference, co-management conflict detection. (8) Visual C++ Redistributable presence check with modern vs legacy classification, pending .NET CBS package detection."
+}
+
+# Find insertion point -- after WU006
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'WU006':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find WU006 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: WU007 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    wu007 = [e for e in verify if e['Id'] == 'WU007']
+    if wu007:
+        print(f"WU007 found. Name={wu007[0]['Name']}, Script={len(wu007[0]['Script'])} chars")
+    else:
+        print("ERROR: WU007 not found after insertion")
+PYEOF]` Product known to interfere with WU, with mechanism description |
+| Other third-party AV | `[i]` Present, noted for troubleshooting |
+| Server OS | `[i]` SecurityCenter2 not available, Uninstall scan only |
+
+##### Check 7 -- Third-Party Update Management
+
+Detects which management tools are controlling updates:
+
+| Tool | Detection Method |
+|---|---|
+| SCCM/MECM | `Get-Service ccmexec` |
+| Intune MDM | `HKLM:\SOFTWARE\Microsoft\Enrollments` with ProviderID = 'MS DM Server' |
+| Patch My PC | `Get-Service PatchMyPC*` |
+| ManageEngine | `Get-Service ManageEngine*\|DesktopCentral\|UEMS` |
+| Automox | `Get-Service amagent` |
+| WSUS | `HKLM:\...\WindowsUpdate\WUServer` registry cross-reference |
+
+**Co-management detection:** If both SCCM and Intune are present, flags as co-managed with a recommendation to verify workload slider assignment.
+
+| Condition | Verdict |
+|---|---|
+| SCCM + Intune (co-management) | `[]` Verify workload slider |
+| Multiple management tools | `[]` Risk of conflicting policies |
+| Single management tool | `[i]` Noted for escalation |
+| No management tools | `[i]` Standalone, locally controlled |
+
+##### Check 8 -- Pending .NET / Visual C++ Prerequisites
+
+**Visual C++ Redistributable:**
+- Scans Uninstall registry for `Microsoft Visual C++ * Redistributable`
+- Classifies as modern (2015+) vs legacy (2005-2014)
+
+**Pending .NET updates:**
+- Checks CBS PackagesPending for NetFx/NDP entries
+
+| Condition | Verdict |
+|---|---|
+| Modern VC++ (2015+) present | `[OK]` |
+| Legacy-only VC++ | `[]` No modern redistributable |
+| No VC++ at all | `[]` Missing, some servicing may fail |
+| Pending .NET CBS package | `[]` Reboot may be required |
+
+#### Example Output (Healthy, Intune-Managed)
+
+```
+=== Windows Update Agent & Environment Audit ===
+
+--- WU Agent ---
+[i]   WU Agent Version
+       Agent version: 10.0.19041.3636
+
+--- OS Build & Edition ---
+[i]   OS Build & Edition
+       Microsoft Windows 11 Pro 23H2 (Build 22631.4890)
+[OK]  Build Eligibility
+       Build 22631 (Windows 11 23H2) is in service and receiving security updates.
+       Home/Pro EOS Nov 2025, Enterprise Nov 2026.
+
+--- .NET Framework ---
+[OK]  .NET Framework Version
+       .NET Framework 4.8.1 (Release 533325). Modern version, no WU concerns.
+
+--- PowerShell ---
+[OK]  PowerShell Version
+       PowerShell 5.1.22621.4890 (CLR 4.0.30319.42000). Expected version.
+
+--- Third-Party AV ---
+[OK]  Third-Party AV
+       No third-party AV detected. Only Windows Defender active. No WU interference expected.
+
+--- Update Management ---
+[i]   Intune MDM Enrollment
+       Device is enrolled in Intune MDM. Update policies may be managed via Intune Update Rings.
+
+--- Prerequisites ---
+[OK]  Visual C++ Redistributable
+       Modern Visual C++ Redistributable (2015-2022) installed. 4 package(s) total.
+
+RESULT: No environment issues detected. WU agent and machine environment look healthy.
+
+NEXT:   If third-party AV flagged  -> consider temporarily disabling or excluding WU from AV scanning
+        If SCCM/Intune managing    -> escalate to the MDM admin, not WU directly
+        If no issues found         -> run WU008 WUDatastoreRepair for deeper repair
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---|---|
+| Service health, disk space, pending reboots, recent failures, cache | WU001 WUQuickHealth |
+| GPO/MDM/UX policy settings, WSUS config, deferrals, pause, active hours | WU002 WUPolicyAudit |
+| DNS, HTTPS connectivity, proxy, VPN, metered connection | WU003 WUNetworkCheck |
+| TLS 1.2, .NET crypto settings, clock drift, root certs, FIPS | WU004 WUTlsCertCheck |
+| DISM health, CBS.log, SFC, component store | WU005 WUComponentHealth |
+| Event log timeline, HRESULT extraction, failure patterns | WU006 WUEventTimeline |
+| Datastore repair, COM re-registration, BITS cleanup | WU008 WUDatastoreRepair |
+
+**Overlap notes:**
+- WU002 checks whether WSUS is *configured* (WUServer registry). WU007 checks whether SCCM/Intune/PatchMyPC are *installed as products*. Different question: "what source is configured?" vs "which tools could be controlling updates?"
+- DEF003 queries SecurityCenter2 for deep Defender coexistence analysis (bitmask, ghosts, remnants). WU007 queries SecurityCenter2 for lightweight WU-interference flagging. Different diagnostic domains.
+- WU004 checks .NET Framework *crypto settings* (SchUseStrongCrypto). WU007 checks .NET Framework *version*. Completely different properties.
+
+#### Version History
+
+| Version | Changes |
+|---|---|
+| 1.0 | Initial build. 8 check groups: WU agent version from Auto Update/WindowsUpdate registry, OS edition/build/UBR from NT CurrentVersion with CIM fallback and LTSC/Server detection, .NET Framework version decode from NDP v4 Full Release DWORD (4.5 through 4.8.1 mapping), PowerShell and CLR version from PSVersionTable, feature update eligibility against 11-entry hardcoded version table (Win10 2004-22H2, Win11 21H2-26H1 ARM64 build 28000) with OK/EXT/EOS verdicts, third-party AV detection via SecurityCenter2 WMI (workstations) + Uninstall registry scan with 10-vendor known-problematic interference table, update management tool inventory (SCCM ccmexec, Intune MDM enrollment, PatchMyPC, ManageEngine, Automox, WSUS cross-reference) with co-management conflict detection, Visual C++ Redistributable modern/legacy classification and pending .NET CBS package detection. |
+
+---
 ## Defender & AV Suite
 
 ### DEF001 -- DEFStatusTriage
