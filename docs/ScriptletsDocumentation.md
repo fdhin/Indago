@@ -914,6 +914,233 @@ WU005 is strictly scoped to servicing stack diagnostics. The following concerns 
 
 ---
 
+### WU006 -- WUEventTimeline
+
+**Version:** 1.0
+**Category:** WindowsUpdate
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Pulls WU-related events from three Windows Event Log sources, merges them into a single chronological timeline, and translates HRESULT error codes into plain English with actionable next-step routing. This gives the tech the **narrative** of a WU failure -- not just "it failed" (WU001) or "the store is corrupt" (WU005), but the blow-by-blow sequence of what happened across download, install, reboot, and commit stages.
+
+WU001-WU005 answer "what's broken?" WU006 answers "what happened?" -- the sequence of events that reveals *where* in the pipeline things went wrong.
+
+#### Usage
+
+```powershell
+# Default: last 7 days of events
+Invoke-Indago -Name WUEventTimeline
+
+# Custom window: last 30 days
+Invoke-Indago -Name WUEventTimeline -Param1 "30"
+```
+
+#### Parameters
+
+| Parameter | Name | Default | Description |
+|---|---|---|---|
+| `Param1` | DaysBack | `7` | How many days of event history to pull |
+
+#### What It Checks
+
+##### Check 1 -- Event Summary Statistics
+
+Provides a compact overview before the full timeline:
+- Total events found across all 3 sources within the time window
+- Breakdown: successes vs failures vs informational events
+- Most frequent error code (if failures exist)
+
+| Condition | Verdict |
+|---|---|
+| No events found | `[OK]` No WU activity or logs cleared |
+| Events found, no failures | `[OK]` Healthy update activity |
+| Events with failures | `[!!]` Failure events detected |
+
+##### Check 2 -- Event Timeline (Chronological, Capped at 50)
+
+Queries 3 event log sources and merges events into a single timeline, sorted newest-first. Output is capped at the **50 most recent events** to keep RMM terminal output readable.
+
+**Source 1: `Microsoft-Windows-WindowsUpdateClient/Operational`**
+
+| Event ID | Type | Meaning |
+|---|---|---|
+| 19 | Success | Installation successful |
+| 20 | Failure | Installation failed (contains HRESULT) |
+| 21 | Info | Restart required to complete install |
+| 25 | Info | Download started |
+| 26 | Success | Download completed |
+| 31 | Failure | Download failed (contains HRESULT) |
+| 41 | Info | Update search started |
+| 42 | Success | Update search completed |
+| 43 | Failure | Update search failed (contains HRESULT) |
+| 44 | Info | Automatic Updates scan started |
+
+**Source 2: `Microsoft-Windows-BITS-Client/Operational`**
+
+All BITS error events are included (not filtered to WU-only jobs, since BITS is primarily used by WU on most endpoints).
+
+| Event ID | Type | Meaning |
+|---|---|---|
+| 3 | Info | Transfer started |
+| 4 | Success | Transfer completed |
+| 5 | Info | Transfer cancelled |
+| 59 | Failure | Transfer error (contains HRESULT) |
+| 60 | Failure | Transfer error (legacy format) |
+| 64 | Failure | Job cancelled unexpectedly |
+
+**Source 3: `System` log (two sub-queries)**
+
+3a. Events from `Microsoft-Windows-WindowsUpdateClient` provider surfaced to the System log. Event level <= 2 (Error/Critical) classified as Failure.
+
+3b. Service Control Manager events (IDs 7031, 7034, 7036, 7043) filtered to WU-related services only. The script matches event messages against: `wuauserv`, `BITS`, `TrustedInstaller`, `UsoSvc`, `Windows Update`, `Background Intelligent Transfer`, `Windows Modules Installer`.
+
+| Event ID | Type | Meaning |
+|---|---|---|
+| 7031 | Failure | Service terminated unexpectedly |
+| 7034 | Failure | Service terminated unexpectedly (2nd variant) |
+| 7036 | Info | Service entered running/stopped state |
+| 7043 | Failure | Service did not shut down properly |
+
+**Timeline output format:**
+```
+yyyy-MM-dd HH:mm  [type]  [Source              ] EventID : Message summary
+```
+
+Each event shows timestamp, type icon (`[OK]`/`[!!]`/`[i]`), source name, event ID, and a truncated message (max 120 chars).
+
+##### Check 3 -- HRESULT Summary (Grouped by Error Code)
+
+After building the timeline, extracts all HRESULTs from failure event messages using regex pattern `0x[0-9A-Fa-f]{8}`. Groups by code and reports:
+
+- Occurrence count
+- Plain-English translation from 25-entry embedded map
+- Suggested next action (routing to appropriate scriptlet)
+
+**Embedded HRESULT Map (25 entries):**
+
+| HRESULT | Translation | Suggested Action |
+|---|---|---|
+| `0x80072EFE` | Connection interrupted | WU003 |
+| `0x80072EE7` | DNS resolution failed | WU003 |
+| `0x80072F8F` | TLS/SSL validation failed | WU004 |
+| `0x800B0109` | Certificate chain error | WU004 |
+| `0x80096004` | Certificate trust failure | WU004 |
+| `0x80244010` | Exceeded max WSUS round trips | Check WSUS |
+| `0x80244022` | Server HTTP 503 | Check WSUS/CDN |
+| `0x8024401C` | Connection timed out | WU003 |
+| `0x80073712` | Component store corruption | WU005 |
+| `0x800F081F` | Source files missing for repair | WU005 |
+| `0x800F0831` | Orphaned manifest corruption | WU005 |
+| `0x80070002` | File not found / corrupt store | WU005 |
+| `0x80240024` | Update not applicable | Informational |
+| `0x80240017` | Update not applicable | Informational |
+| `0x80070643` | MSI / WinRE partition failure | Check WinRE |
+| `0x800F0922` | Safe OS phase failed | Check WinRE + disk |
+| `0x80080005` | COM/RPC failure | WU009 |
+| `0x8007000E` | Out of memory | Close apps, retry |
+| `0x80070005` | Access denied | Check AV/Tamper |
+| `0x80070020` | Sharing violation (AV/EDR) | Check AV exclusions |
+| `0x800705B4` | Operation timed out | WU009 |
+| `0x80070BC9` | Reboot required first | Reboot machine |
+| `0x8024002E` | WU administratively disabled | WU002 |
+| `0x80242014` | Post-reboot finalization pending | Reboot machine |
+| `0x80244019` | WSUS rejected (HTTP 503) | Check WSUS |
+
+Unknown HRESULTs are shown as `[!]` with a link to search Microsoft Learn.
+
+#### Example Output (System with Failures)
+
+```
+=== Windows Update Event Timeline ===
+
+[!!]  Event Overview
+       42 events across all sources. 28 success, 8 failure, 6 informational.
+       Most common error: 0x80072EFE (5 occurrence(s)).
+
+--- Timeline (50 Most Recent of 42) ---
+2026-03-28 15:03  [OK]  [WindowsUpdateClient ] 19 : Installation successful: Security Update KB5035942
+2026-03-28 15:02  [OK]  [WindowsUpdateClient ] 26 : Download completed: KB5035942
+2026-03-28 15:00  [i]   [WindowsUpdateClient ] 25 : Download started: KB5035942
+2026-03-28 14:32  [!!]  [WindowsUpdateClient ] 31 : Download failed: KB5035942 (0x80072EFE)
+2026-03-28 14:31  [!!]  [BITS                ] 59 : Transfer error: 0x80072EFE
+2026-03-28 14:30  [i]   [WindowsUpdateClient ] 25 : Download started: KB5035942
+...
+
+--- HRESULT Summary ---
+[!!]  0x80072EFE  (5 occurrence(s))
+       Connection interrupted -- server reset or dropped the connection mid-transfer.
+       -> Run WU003 WUNetworkCheck to diagnose connectivity.
+
+[!!]  0x80070643  (2 occurrence(s))
+       MSI installer failure or WinRE recovery partition too small.
+       -> Check WinRE partition size. Manual resize may be needed.
+
+[i]   0x80240024  (1 occurrence(s))
+       Update not applicable to this system architecture or edition.
+       -> Informational -- usually not a problem.
+
+RESULT: 3 unique error(s) found across 8 failure event(s). Review HRESULT details above.
+
+NEXT:   Address the most common HRESULT listed above.
+        If network errors (0x8007xxxx)  -> run WU003 WUNetworkCheck
+        If cert errors (0x800B/0x8009)  -> run WU004 WUTlsCertCheck
+        If store corruption (0x800F)    -> run WU005 WUComponentHealth
+        If service errors (0x80080005)  -> run WU009 WUServiceReset
+        If no errors found              -> issue may be policy (WU002) or environmental (WU007)
+```
+
+#### Example Output (Healthy System)
+
+```
+=== Windows Update Event Timeline ===
+
+[OK]  Event Overview
+       18 events across all sources. 12 success, 0 failure, 6 informational.
+
+--- Timeline (All 18 Events) ---
+2026-04-03 03:15  [OK]  [WindowsUpdateClient ] 19 : Installation successful: Cumulative Update KB5040442
+2026-04-03 03:12  [OK]  [WindowsUpdateClient ] 26 : Download completed: KB5040442
+2026-04-03 03:00  [i]   [WindowsUpdateClient ] 25 : Download started: KB5040442
+2026-04-03 02:55  [OK]  [WindowsUpdateClient ] 42 : Update search completed
+2026-04-03 02:50  [i]   [WindowsUpdateClient ] 44 : Automatic Updates scan started
+...
+
+RESULT: No failure events detected. Windows Update activity looks healthy.
+
+NEXT:   Address the most common HRESULT listed above.
+        If network errors (0x8007xxxx)  -> run WU003 WUNetworkCheck
+        If cert errors (0x800B/0x8009)  -> run WU004 WUTlsCertCheck
+        If store corruption (0x800F)    -> run WU005 WUComponentHealth
+        If service errors (0x80080005)  -> run WU009 WUServiceReset
+        If no errors found              -> issue may be policy (WU002) or environmental (WU007)
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---|---|
+| WU services, disk space, reboot flags, cache, COM API history | WU001 WUQuickHealth |
+| GPO/MDM/WSUS policy, deferral, pause | WU002 WUPolicyAudit |
+| DNS, HTTPS connectivity, proxy, VPN, metered | WU003 WUNetworkCheck |
+| TLS 1.2 Schannel, .NET crypto, clock drift, root certs, FIPS | WU004 WUTlsCertCheck |
+| DISM health, CBS.log parsing, SFC result, component store sizing | WU005 WUComponentHealth |
+| Third-party AV, hardware, Defender | WU007 WUEnvironmentAudit |
+| Service reset, cache clear | WU009 WUServiceReset |
+| DISM /RestoreHealth, SFC /scannow, full servicing fix | WU010 WUServicingRepair |
+
+**WU001 Check 4 vs WU006:** WU001 queries the WU COM API (`Microsoft.Update.Session`) for per-update outcomes. WU006 queries Windows Event Logs for the operational event sequence. Different data sources, different diagnostic purpose. WU001 says "KB5035942 failed with 0x80072EFE." WU006 says "download started -> BITS transfer error -> download failed -> retry -> succeeded."
+
+**WU005 Check 2-3 vs WU006:** WU005 parses `CBS.log` (text file) for servicing stack corruption markers. WU006 reads structured Windows Event Logs. Completely different data sources. Some HRESULTs appear in both (e.g., 0x80073712) but are found in different contexts.
+
+#### Version History
+
+| Version | Changes |
+|---|---|
+| 1.0 | Initial build. 3 output sections: event summary statistics (total/success/failure/info counts with most common error code), chronological timeline from 3 sources capped at 50 most recent events (WindowsUpdateClient/Operational IDs 19/20/21/25/26/31/41/42/43/44, BITS-Client/Operational IDs 3/4/5/59/60/64, System log Microsoft-Windows-WindowsUpdateClient provider + Service Control Manager IDs 7031/7034/7036/7043 filtered for WU service names), HRESULT summary with 25-entry embedded translation map and scriptlet routing. Regex extraction pattern `0x[0-9A-Fa-f]{8}`. Configurable time window via Param1 (default 7 days). |
+
+
 ## Defender & AV Suite
 
 ### DEF001 -- DEFStatusTriage
