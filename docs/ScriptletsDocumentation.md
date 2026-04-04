@@ -2078,6 +2078,454 @@ NEXT:   If GPO conflicts found      -> remove conflicting GPO or migrate setting
 
 ---
 
+### DEF006 -- DEFPlatformVersion
+
+**Version:** 1.0
+**Category:** DefenderEndpoint
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Validates the structural health of the Microsoft Defender Antivirus **platform** (MoCAMP), the **antimalware engine**, and the **NIS engine**. These three components are independently versioned and updated on different cadences -- the platform monthly via KB4052623, the engine daily with definitions, and the NIS engine less frequently.
+
+When the platform falls behind Microsoft's **N-2 support boundary**, the engine silently fails to ingest modern Security Intelligence payloads. The endpoint appears functional (services running, Defender "on") but is effectively unprotected. DEF006 catches this exact scenario -- the missing link between DEF002 (definitions stale) and DEF005 (no policy conflicts).
+
+> **Key insight:** A deprecated platform is invisible to basic health checks. Services run, definitions download (but fail to apply), and Security Center reports "on." Only a direct version comparison against known-good baselines reveals the problem.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name DEFPlatformVersion
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- Component Version Comparison
+
+Queries `Get-MpComputerStatus` (with CIM fallback to `MSFT_MpComputerStatus`) for three independently-versioned components:
+
+| Property | Component | Update Vehicle | Cadence |
+|---|---|---|---|
+| `AMProductVersion` | Platform (MoCAMP) | KB4052623 | Monthly |
+| `AMEngineVersion` | Antimalware engine | Definition updates | ~Daily |
+| `NISEngineVersion` | Network Inspection engine | Less frequent | Varies |
+
+**Hardcoded baselines (as of April 2026):**
+
+| Component | Warning Threshold | Critical (N-2) Threshold |
+|---|---|---|
+| Platform | `4.18.26010.0` (~Jan 2026, 3 months behind) | `4.18.25100.0` (~Oct 2025, 6 months behind) |
+| Engine | `1.1.26010.0` | `1.1.25100.0` |
+
+**Verdict logic:**
+
+| Condition | Verdict |
+|---|---|
+| At or above warning baseline | `[OK]` Current |
+| Below warning but above critical | `[]` Approaching N-2 deprecation |
+| Below critical baseline | `[python3 -c "
+import json, re
+with open('Scriptlets/ScriptletCatalog.json') as f:
+    data = json.load(f)
+for e in data:
+    if e['Id'] == 'DEF006':
+        s = e['Script']
+        # Check for PS7 syntax
+        issues = []
+        if '??' in s: issues.append('null-coalescing ??')
+        if '?.' in s: issues.append('null-conditional ?.')
+        if re.search(r'\?\s', s): issues.append('possible ternary ?')
+        if '-AsHashtable' in s: issues.append('-AsHashtable')
+        if '-AsByteStream' in s: issues.append('-AsByteStream')
+        if 'ForEach-Object -Parallel' in s: issues.append('ForEach-Object -Parallel')
+        if '&&' in s: issues.append('pipeline chain &&')
+        if '||' in s: issues.append('pipeline chain ||')
+        if 'Get-WmiObject' in s: issues.append('Get-WmiObject')
+        # Check for non-ASCII
+        non_ascii = []
+        for i, c in enumerate(s):
+            if ord(c) > 127:
+                non_ascii.append(f'pos {i}: {repr(c)}')
+        if non_ascii:
+            issues.append(f'Non-ASCII chars: {non_ascii[:5]}')
+        if issues:
+            print('PS 5.1 VIOLATIONS:')
+            for i in issues: print(f'  - {i}')
+        else:
+            print('No PS 5.1 violations found.')
+        break
+"]` CRITICALLY OUTDATED -- deprecated and unsupported |
+| Version is `0.0.0.0` or empty | `[python3 -c "
+import json, re
+with open('Scriptlets/ScriptletCatalog.json') as f:
+    data = json.load(f)
+for e in data:
+    if e['Id'] == 'DEF006':
+        s = e['Script']
+        # Check for PS7 syntax
+        issues = []
+        if '??' in s: issues.append('null-coalescing ??')
+        if '?.' in s: issues.append('null-conditional ?.')
+        if re.search(r'\?\s', s): issues.append('possible ternary ?')
+        if '-AsHashtable' in s: issues.append('-AsHashtable')
+        if '-AsByteStream' in s: issues.append('-AsByteStream')
+        if 'ForEach-Object -Parallel' in s: issues.append('ForEach-Object -Parallel')
+        if '&&' in s: issues.append('pipeline chain &&')
+        if '||' in s: issues.append('pipeline chain ||')
+        if 'Get-WmiObject' in s: issues.append('Get-WmiObject')
+        # Check for non-ASCII
+        non_ascii = []
+        for i, c in enumerate(s):
+            if ord(c) > 127:
+                non_ascii.append(f'pos {i}: {repr(c)}')
+        if non_ascii:
+            issues.append(f'Non-ASCII chars: {non_ascii[:5]}')
+        if issues:
+            print('PS 5.1 VIOLATIONS:')
+            for i in issues: print(f'  - {i}')
+        else:
+            print('No PS 5.1 violations found.')
+        break
+"]` Defender may be broken |
+
+NIS engine is reported as `[i]` informational only (no independent deprecation threshold).
+
+> **Why hardcoded?** There is no native offline method to query the latest versions from Microsoft. The only options are parsing an RSS feed (requires internet, violates no-external-dependency rule) or hardcoding a conservative baseline. These thresholds should be updated in future scriptlet version bumps.
+
+##### Check 2 -- Update Channel & Ring Configuration
+
+Reads the update delivery channel configuration from three registry layers:
+
+| Layer | Registry Path |
+|---|---|
+| GPO | `HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Updates` |
+| MDM | `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Defender` |
+| Local | `HKLM:\SOFTWARE\Microsoft\Windows Defender` |
+
+**Values checked:** `PlatformUpdatesChannel`, `EngineUpdatesChannel`
+
+**Integer-to-channel decode table:**
+
+| Value | Channel | Description |
+|---|---|---|
+| 0 | Not Configured | Default (immediate GA) |
+| 2 | Beta | Earliest adopter ring |
+| 3 | Current (Preview) | Slight delay from Beta |
+| 4 | Current (Staged) | Pilot production ring |
+| 5 | Current (Broad) | Most conservative GA ring |
+| 6 | Critical -- Time Delay | 48-hour intentional delay |
+
+**Verdict logic:**
+
+| Condition | Verdict |
+|---|---|
+| Channel 0-3 or not set | `[OK]` with decoded values |
+| Channel 4+ (Staged/Broad/Delayed) | `[i]` Delayed ring -- intentional but explains version lag |
+
+Also reports:
+- `DefinitionUpdatesChannel` (GPO) if configured
+- `PlatformUpdatesGradualRolloutPercentage` if configured (fleet throttling)
+
+> **Scope note:** This does NOT duplicate DEF005's policy comparison. DEF005 compares protection settings (RTP, MAPS, ASR, etc.). DEF006 compares *update delivery ring* settings -- an entirely different policy surface.
+
+##### Check 3 -- Platform Update Events (Last 30 Days)
+
+Queries `Microsoft-Windows-Windows Defender/Operational` event log for platform-specific events.
+
+**Success tracking:**
+
+| Event ID | Significance |
+|---|---|
+| 2002 | Successful engine/platform update -- confirms update pipeline is working |
+
+**Deprecation/expiration warnings:**
+
+| Event ID | Name | Verdict |
+|---|---|---|
+| 2007 | `MALWAREPROTECTION_PLATFORM_ALMOSTOUTOFDATE` | `[]` Approaching N-2 |
+| 5100 | `MALWAREPROTECTION_EXPIRATION_WARNING_STATE` | `[python3 -c "
+import json, re
+with open('Scriptlets/ScriptletCatalog.json') as f:
+    data = json.load(f)
+for e in data:
+    if e['Id'] == 'DEF006':
+        s = e['Script']
+        # Check for PS7 syntax
+        issues = []
+        if '??' in s: issues.append('null-coalescing ??')
+        if '?.' in s: issues.append('null-conditional ?.')
+        if re.search(r'\?\s', s): issues.append('possible ternary ?')
+        if '-AsHashtable' in s: issues.append('-AsHashtable')
+        if '-AsByteStream' in s: issues.append('-AsByteStream')
+        if 'ForEach-Object -Parallel' in s: issues.append('ForEach-Object -Parallel')
+        if '&&' in s: issues.append('pipeline chain &&')
+        if '||' in s: issues.append('pipeline chain ||')
+        if 'Get-WmiObject' in s: issues.append('Get-WmiObject')
+        # Check for non-ASCII
+        non_ascii = []
+        for i, c in enumerate(s):
+            if ord(c) > 127:
+                non_ascii.append(f'pos {i}: {repr(c)}')
+        if non_ascii:
+            issues.append(f'Non-ASCII chars: {non_ascii[:5]}')
+        if issues:
+            print('PS 5.1 VIOLATIONS:')
+            for i in issues: print(f'  - {i}')
+        else:
+            print('No PS 5.1 violations found.')
+        break
+"]` Grace period ending |
+| 5101 | `MALWAREPROTECTION_DISABLED_EXPIRED_STATE` | `[python3 -c "
+import json, re
+with open('Scriptlets/ScriptletCatalog.json') as f:
+    data = json.load(f)
+for e in data:
+    if e['Id'] == 'DEF006':
+        s = e['Script']
+        # Check for PS7 syntax
+        issues = []
+        if '??' in s: issues.append('null-coalescing ??')
+        if '?.' in s: issues.append('null-conditional ?.')
+        if re.search(r'\?\s', s): issues.append('possible ternary ?')
+        if '-AsHashtable' in s: issues.append('-AsHashtable')
+        if '-AsByteStream' in s: issues.append('-AsByteStream')
+        if 'ForEach-Object -Parallel' in s: issues.append('ForEach-Object -Parallel')
+        if '&&' in s: issues.append('pipeline chain &&')
+        if '||' in s: issues.append('pipeline chain ||')
+        if 'Get-WmiObject' in s: issues.append('Get-WmiObject')
+        # Check for non-ASCII
+        non_ascii = []
+        for i, c in enumerate(s):
+            if ord(c) > 127:
+                non_ascii.append(f'pos {i}: {repr(c)}')
+        if non_ascii:
+            issues.append(f'Non-ASCII chars: {non_ascii[:5]}')
+        if issues:
+            print('PS 5.1 VIOLATIONS:')
+            for i in issues: print(f'  - {i}')
+        else:
+            print('No PS 5.1 violations found.')
+        break
+"]` Platform expired, protection force-disabled |
+
+**Platform update failure detection:**
+
+Queries Events 2001/2003 and filters for platform-specific failures by matching keywords (`platform`, `engine update`, `MoCAMP`) and known platform HRESULTs. Translates error codes via a 10-entry HRESULT table:
+
+| HRESULT | Translation |
+|---|---|
+| `0x80310059` | BitLocker encryption conflict blocking platform update (PCR 7 / Secure Boot) |
+| `0x80070643` | Fatal installation error -- .NET corruption or insufficient WinRE partition (<250 MB) |
+| `0x80240016` | Update locked -- another installation in progress |
+| `0x80508007` | Out of memory -- platform payload failed to unpack |
+| `0x80290401` | TPM Platform Crypto Device not ready |
+| `0x80508023` | Platform too old -- update rejected by the engine (N-2 exceeded) |
+| `0x80070005` | Access denied -- permissions issue during update |
+| `0x80508026` | Engine update failed |
+| `0x800F0922` | CBS session error -- insufficient WinRE partition or pending reboot |
+| `0x80240022` | All updates failed -- payload corrupted in transit |
+
+**Configuration change tracking:**
+
+Scans Event 5007 for `PlatformUpdatesChannel` or `EngineUpdatesChannel` changes -- reports count if detected.
+
+> **Overlap note:** DEF002 already queries Event IDs 2000, 2001, 2003 for *signature* updates. DEF006 queries Event 2002 (platform/engine success) and Events 2007, 5100, 5101 (platform deprecation) which DEF002 does not cover. Events 2001/2003 are filtered specifically for platform-related content to avoid duplicating DEF002's signature failure analysis.
+
+##### Check 4 -- MoCAMP Update Mechanism Health
+
+Three sub-checks targeting the platform update pipeline:
+
+**4a -- Orphaned MoCAMPUpdateStarted Lock:**
+
+Reads `HKLM:\SOFTWARE\Microsoft\Windows Defender` -> `MoCAMPUpdateStarted`. If present, the MoCAMP engine believes an update is in progress and will reject all subsequent update attempts. This is a **critical finding** -- the update pipeline is deadlocked.
+
+Common cause: a previous platform update was interrupted by power loss, crash, or forced termination.
+
+| Condition | Verdict |
+|---|---|
+| Value absent | `[OK]` Pipeline clear |
+| Value present | `[python3 -c "
+import json, re
+with open('Scriptlets/ScriptletCatalog.json') as f:
+    data = json.load(f)
+for e in data:
+    if e['Id'] == 'DEF006':
+        s = e['Script']
+        # Check for PS7 syntax
+        issues = []
+        if '??' in s: issues.append('null-coalescing ??')
+        if '?.' in s: issues.append('null-conditional ?.')
+        if re.search(r'\?\s', s): issues.append('possible ternary ?')
+        if '-AsHashtable' in s: issues.append('-AsHashtable')
+        if '-AsByteStream' in s: issues.append('-AsByteStream')
+        if 'ForEach-Object -Parallel' in s: issues.append('ForEach-Object -Parallel')
+        if '&&' in s: issues.append('pipeline chain &&')
+        if '||' in s: issues.append('pipeline chain ||')
+        if 'Get-WmiObject' in s: issues.append('Get-WmiObject')
+        # Check for non-ASCII
+        non_ascii = []
+        for i, c in enumerate(s):
+            if ord(c) > 127:
+                non_ascii.append(f'pos {i}: {repr(c)}')
+        if non_ascii:
+            issues.append(f'Non-ASCII chars: {non_ascii[:5]}')
+        if issues:
+            print('PS 5.1 VIOLATIONS:')
+            for i in issues: print(f'  - {i}')
+        else:
+            print('No PS 5.1 violations found.')
+        break
+"]` Update lock blocking all platform updates |
+
+**4b -- Platform Staging Directory:**
+
+Inspects `C:\ProgramData\Microsoft\Windows Defender\Platform` for version folders:
+
+| Condition | Verdict |
+|---|---|
+| 1-3 folders | `[OK]` with latest folder name |
+| >3 folders | `[]` Excessive staging, may indicate failed cleanup |
+| Directory missing | `[]` Unexpected -- should exist on all Win10/11 |
+
+Also compares the latest staged folder version against the running platform version to detect:
+- Staged version newer than running -> reboot may be required
+- Staged version older than running -> normal post-update state
+
+**4c -- Update Delivery Services:**
+
+Checks `wuauserv` (Windows Update) and `BITS` -- these handle the HTTP payload delivery of KB4052623:
+
+| Condition | Verdict |
+|---|---|
+| Running or Manual start type (stopped) | `[OK]` or `[i]` |
+| Disabled | `[python3 -c "
+import json, re
+with open('Scriptlets/ScriptletCatalog.json') as f:
+    data = json.load(f)
+for e in data:
+    if e['Id'] == 'DEF006':
+        s = e['Script']
+        # Check for PS7 syntax
+        issues = []
+        if '??' in s: issues.append('null-coalescing ??')
+        if '?.' in s: issues.append('null-conditional ?.')
+        if re.search(r'\?\s', s): issues.append('possible ternary ?')
+        if '-AsHashtable' in s: issues.append('-AsHashtable')
+        if '-AsByteStream' in s: issues.append('-AsByteStream')
+        if 'ForEach-Object -Parallel' in s: issues.append('ForEach-Object -Parallel')
+        if '&&' in s: issues.append('pipeline chain &&')
+        if '||' in s: issues.append('pipeline chain ||')
+        if 'Get-WmiObject' in s: issues.append('Get-WmiObject')
+        # Check for non-ASCII
+        non_ascii = []
+        for i, c in enumerate(s):
+            if ord(c) > 127:
+                non_ascii.append(f'pos {i}: {repr(c)}')
+        if non_ascii:
+            issues.append(f'Non-ASCII chars: {non_ascii[:5]}')
+        if issues:
+            print('PS 5.1 VIOLATIONS:')
+            for i in issues: print(f'  - {i}')
+        else:
+            print('No PS 5.1 violations found.')
+        break
+"]` Platform updates cannot be delivered |
+| Service not found | `[]` |
+
+> **Scope note:** This is NOT the same as DEF001's service check. DEF001 checks WinDefend/WdNisSvc/Sense health broadly. DEF006 checks wuauserv/BITS because they are the **platform update delivery mechanism** -- distinct from the Defender service itself.
+
+##### Check 5 -- WSUS Version Pinning Analysis
+
+Correlates platform version staleness with WSUS configuration:
+
+1. Reads `HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate` -> `WUServer`
+2. Reads the signature update `FallbackOrder` to determine if WSUS is in the update chain
+3. If WSUS is configured AND platform version is behind baseline:
+   - Flags that KB4052623 may not be approved on the WSUS server
+   - Recommends verifying WSUS approval or adding MMPC to FallbackOrder
+
+Also checks `ForceUpdateFromMU` -- if enabled, definitions can bypass WSUS to Microsoft Update.
+
+| Condition | Verdict |
+|---|---|
+| WSUS not configured | `[OK]` Direct Microsoft Update (default) |
+| WSUS configured, platform current | `[OK]` KB4052623 appears approved |
+| WSUS configured, platform behind | `[]` KB4052623 may not be approved |
+
+> **Scope note:** DEF006 does NOT re-test WSUS TCP connectivity (DEF002 already defers that to WU002). It only reads the WSUS configuration to correlate with platform staleness.
+
+#### Example Output (Healthy System)
+
+```
+=== Defender Platform & Engine Version Check ===
+
+--- Component Versions ---
+[OK]  Platform Version (AMProductVersion)
+       4.18.26030.2. Current (at or above baseline 4.18.26010.0).
+[OK]  Engine Version (AMEngineVersion)
+       1.1.26030.1. Current.
+[i]   NIS Engine Version
+       2.1.9700.0. (NIS engine does not have an independent deprecation threshold.)
+
+--- Update Channel & Ring ---
+[OK]  Platform Update Channel
+       GPO: Not set. MDM: Not set. Local: Not set.
+[OK]  Engine Update Channel
+       GPO: Not set. MDM: Not set. Local: Not set.
+
+--- Platform Update Events (last 30 days) ---
+[OK]  Platform/Engine Update Success (Event 2002)
+       3 successful update(s) in last 30 days. Most recent: 2026-04-01 09:22.
+
+--- MoCAMP Update Mechanism ---
+[OK]  MoCAMPUpdateStarted Lock: Not present
+       No orphaned update lock. Platform update pipeline is clear.
+[OK]  Platform Staging Directory: 2 version folder(s)
+       Latest: 4.18.26030.2.
+[OK]  Windows Update (wuauserv): Stopped (start type: Manual)
+[OK]  Background Intelligent Transfer (BITS): Stopped (start type: Manual)
+
+--- WSUS Pinning Analysis ---
+[OK]  WSUS: Not configured
+       Platform updates are sourced directly from Microsoft Update (default).
+
+RESULT: No issues detected. Defender platform and engine are current.
+
+NEXT:   If platform outdated         -> force update via: MpCmdRun.exe -SignatureUpdate -MMPC
+        If WSUS holding back         -> approve Defender platform updates (KB4052623) on WSUS
+        If MoCAMP lock present       -> run DEF008 DEFRemediation to reset the update path
+        If platform current          -> run DEF007 DEFEventAnalysis for event-level investigation
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---|---|
+| AV running mode, Security Center bitmask, services, MDE sensor, signal gap | DEF001 DEFStatusTriage |
+| Definition update sources, WSUS/MMPC config, connectivity, signature events | DEF002 DEFDefinitionHealth |
+| Third-party AV remnants, ghost registrations, DisableAntiSpyware/DisableAntiVirus | DEF003 DEFThirdPartyAV |
+| RTP sub-component source attribution, Tamper Protection, exclusion patterns, ASR | DEF004 DEFRealtimeProtection |
+| GPO vs MDM vs Local protection policy comparison (9 settings) | DEF005 DEFPolicyConflict |
+| Event log timeline, threat history, error codes | DEF007 DEFEventAnalysis |
+| Service reset, ghost cleanup, remediation | DEF008 DEFRemediation |
+
+**Overlap notes:**
+- DEF002 checks *signature* update source connectivity and `FallbackOrder`. DEF006 reads `FallbackOrder` only to *correlate* WSUS presence with platform staleness -- it does not re-test connectivity.
+- DEF002 queries signature events (2000/2001/2003). DEF006 queries platform events (2002/2007/5100/5101). Events 2001/2003 are shared but DEF006 filters for platform-specific content only.
+- DEF005 compares *protection* policies (RTP, MAPS, etc.) across GPO/MDM/Local. DEF006 compares *update channel/ring* policies -- entirely different registry surface.
+- DEF001 checks WinDefend/WdNisSvc/Sense services. DEF006 checks wuauserv/BITS -- the platform *update delivery* services, not the Defender services themselves.
+
+#### Version History
+
+| Version | Changes |
+|---|---|
+| 1.0 | Initial build. 5 check groups: Component version comparison (platform, engine, NIS) against hardcoded baselines (warn 4.18.26010.0, critical 4.18.25100.0) with N-2 deprecation awareness. Update channel/ring decode (PlatformUpdatesChannel, EngineUpdatesChannel) across GPO/MDM/Local with 0-6 integer-to-channel mapping, delayed ring detection, DefinitionUpdatesChannel, GradualRolloutPercentage. Platform update event log queries (Event 2002 success, Events 2007/5100/5101 deprecation/expiration warnings, Events 2001/2003 filtered for platform-specific failures) with 10-entry HRESULT translation table. MoCAMP mechanism health (orphaned MoCAMPUpdateStarted lock detection, platform staging directory inspection with version comparison, wuauserv/BITS service state). WSUS version pinning correlation (WSUS server detection + platform staleness cross-reference + ForceUpdateFromMU). |
+
+---
+
 ## BitLocker Suite
 
 ### BL001 -- BLStatusSnapshot
@@ -2999,6 +3447,614 @@ NEXT:   If escrow failed due to connectivity -> fix network (see WU003 WUNetwork
 | Version | Changes |
 |---|---|
 | 1.0 | Initial build. 6 check groups: escrow policy requirements from FVE registry (OSRequireActiveDirectoryBackup gate, FDVRequireActiveDirectoryBackup, OSActiveDirectoryInfoToStore), AAD device registration via dsregcmd /status parsing for AzureAdPrt/DeviceAuthStatus/TpmProtected/TenantId with zombie PRT detection, escrow event history 7-day window for Event IDs 845/846/851/858/778 with 6-code HRESULT table and 200-key limit hint, escrow endpoint connectivity TCP 443 to login.microsoftonline.com + enterpriseregistration.windows.net + device.login.microsoftonline.com with 3-second timeout, recovery key protector status with GUID-to-Event 845 cross-reference for escrow confirmation, lightweight WinRE check via reagentc /info. |
+
+---
+
+### BL006 -- BLPolicyConflict
+
+**Version:** 1.0
+**Category:** BitLocker
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Detects group policy vs MDM conflicts that silently block BitLocker encryption in hybrid-managed environments. A single orphaned GPO registry value in the FVE hive can completely override an Intune BitLocker policy, causing silent encryption failures that are extremely difficult to diagnose without direct registry comparison.
+
+BL006 answers: "Are there conflicting or orphaned GPO settings that are blocking MDM-driven BitLocker encryption?"
+
+> **Key insight:** `MDMWinsOverGP = 1` does NOT fully apply to settings governed by the BitLocker CSP. Many BitLocker GPO settings lack a direct 1:1 mapping in the modern BitLocker CSP, so legacy FVE registry values will continue to override MDM policy even when MDMWinsOverGP is enabled. This is the same architectural limitation as with the Defender CSP (see DEF005).
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name BLPolicyConflict
+```
+
+No parameters.
+
+#### What It Checks
+
+##### Check 1 -- GPO-Delivered BitLocker Settings (FVE Registry)
+
+Reads and decodes all known BitLocker Group Policy settings from `HKLM:\SOFTWARE\Policies\Microsoft\FVE`.
+
+**Settings enumerated:**
+
+| Registry Value | Decoded Meaning |
+|---|---|
+| `EncryptionMethodWithXtsOs` | OS drive cipher: 3=AES-CBC-128, 4=AES-CBC-256, 6=XTS-AES-128, 7=XTS-AES-256 |
+| `EncryptionMethodWithXtsFdv` | Fixed data drive cipher (same mapping) |
+| `EncryptionMethodWithXtsRdv` | Removable drive cipher (same mapping) |
+| `UseTPM` | 0=Do not allow, 1=Require, 2=Allow TPM |
+| `UseTPMPIN` | 0=Do not allow, 1=Require, 2=Allow startup PIN |
+| `UseTPMKey` | 0=Do not allow, 1=Require, 2=Allow startup key |
+| `UseTPMKeyPIN` | 0=Do not allow, 1=Require, 2=Allow TPM+Key+PIN |
+| `MinimumPIN` | Minimum PIN length (4-20) |
+| `OSRecovery` | 1=Allow recovery |
+| `OSRequireActiveDirectoryBackup` | 1=Must escrow to AD DS before enabling |
+| `OSActiveDirectoryInfoToStore` | 1=Passwords+packages, 2=Passwords only |
+| `EnableBDEWithNoTPM` | 1=Allow BitLocker without TPM |
+
+**Legacy platform validation subkeys:**
+- `HKLM:\...\FVE\OSPlatformValidation_BIOS`
+- `HKLM:\...\FVE\OSPlatformValidation_UEFI`
+
+These legacy PCR profile keys are a primary cause of silent encryption failure on Intune-managed devices (HRESULT `0x80310059`).
+
+| Condition | Verdict |
+|---|---|
+| FVE path absent | `[OK]` No GPO BitLocker settings |
+| FVE path present with values | `[i]` Report each setting with decoded meaning |
+| Legacy platform validation subkeys present | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/BL006_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "BL006",
+    "Name": "BLPolicyConflict",
+    "DisplayName": "BitLocker Group Policy vs MDM Conflict Detection",
+    "Category": "BitLocker",
+    "Description": "Detects group policy vs MDM conflicts that silently block BitLocker encryption. Reads GPO settings from HKLM:\\SOFTWARE\\Policies\\Microsoft\\FVE and MDM settings from PolicyManager, compares encryption method, startup authentication, recovery password, and PIN length. Checks MDMWinsOverGP assessment with BitLocker CSP limitation warning. Detects orphaned (tattooed) GPO settings from previous domain membership.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "gpo", "mdm", "conflict", "hybrid", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 5 check groups: (1) GPO-delivered BitLocker settings from FVE registry with cipher/TPM usage decode tables and legacy PCR validation subkey detection. (2) MDM-delivered BitLocker settings from PolicyManager with XML parsing for EncryptionMethodByDriveType and SystemDrivesRequireStartupAuthentication. (3) Conflict detection comparing encryption method, startup PIN, AD backup deadlock, and minimum PIN length between GPO and MDM. (4) MDMWinsOverGP assessment at PolicyManager/current/device/ControlPolicyConflict with BitLocker CSP limitation warning (MDMWinsOverGP does NOT fully apply to BitLocker CSP settings). (5) Orphaned GPO settings detection via domain-join state check with specific dangerous patterns (legacy PCR profiles, AD backup on non-domain device, orphaned PIN requirement)."
+}
+
+# Find insertion point -- after BL005
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL005':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL005 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL006 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl006 = [e for e in verify if e['Id'] == 'BL006']
+    if bl006:
+        print(f"BL006 found with Name={bl006[0]['Name']}")
+    else:
+        print("ERROR: BL006 not found after insertion")
+PYEOF]` May block MDM encryption |
+
+##### Check 2 -- MDM-Delivered BitLocker Settings (PolicyManager)
+
+Reads BitLocker CSP settings from `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\BitLocker`.
+
+**Settings read:**
+
+| Registry Value | Meaning |
+|---|---|
+| `RequireDeviceEncryption` | 1=Encryption required |
+| `EncryptionMethodByDriveType` | XML-encoded cipher configuration (parsed for OS drive cipher value) |
+| `SystemDrivesRequireStartupAuthentication` | XML-encoded startup auth config (parsed for PIN requirement) |
+| `SystemDrivesMinimumPINLength` | Minimum PIN length |
+| `AllowWarningForOtherDiskEncryption` | 0=Silent encryption, 1=Show warnings |
+
+XML fields are parsed using regex pattern matching to extract `EncryptionMethodWithXtsOsDropDown_Name` and `ConfigureTPMPINUsageDropDown_Name` values.
+
+> **Scope note:** BL004 also reads `PolicyManager\current\device\BitLocker` to report what MDM configured. BL006 reads the same path but solely to compare against GPO values for conflict detection. Different question, complementary answers.
+
+| Condition | Verdict |
+|---|---|
+| Path absent | `[i]` No MDM BitLocker settings |
+| `RequireDeviceEncryption = 1` | `[OK]` MDM requires encryption |
+| Path exists but encryption not required | `[i]` MDM path exists but not actively managing encryption |
+
+##### Check 3 -- Conflict Detection (GPO vs MDM)
+
+Performs side-by-side comparison of specific policy facets:
+
+**3a -- Encryption Method:**
+
+| Condition | Verdict |
+|---|---|
+| GPO and MDM specify different cipher | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/BL006_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "BL006",
+    "Name": "BLPolicyConflict",
+    "DisplayName": "BitLocker Group Policy vs MDM Conflict Detection",
+    "Category": "BitLocker",
+    "Description": "Detects group policy vs MDM conflicts that silently block BitLocker encryption. Reads GPO settings from HKLM:\\SOFTWARE\\Policies\\Microsoft\\FVE and MDM settings from PolicyManager, compares encryption method, startup authentication, recovery password, and PIN length. Checks MDMWinsOverGP assessment with BitLocker CSP limitation warning. Detects orphaned (tattooed) GPO settings from previous domain membership.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "gpo", "mdm", "conflict", "hybrid", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 5 check groups: (1) GPO-delivered BitLocker settings from FVE registry with cipher/TPM usage decode tables and legacy PCR validation subkey detection. (2) MDM-delivered BitLocker settings from PolicyManager with XML parsing for EncryptionMethodByDriveType and SystemDrivesRequireStartupAuthentication. (3) Conflict detection comparing encryption method, startup PIN, AD backup deadlock, and minimum PIN length between GPO and MDM. (4) MDMWinsOverGP assessment at PolicyManager/current/device/ControlPolicyConflict with BitLocker CSP limitation warning (MDMWinsOverGP does NOT fully apply to BitLocker CSP settings). (5) Orphaned GPO settings detection via domain-join state check with specific dangerous patterns (legacy PCR profiles, AD backup on non-domain device, orphaned PIN requirement)."
+}
+
+# Find insertion point -- after BL005
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL005':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL005 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL006 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl006 = [e for e in verify if e['Id'] == 'BL006']
+    if bl006:
+        print(f"BL006 found with Name={bl006[0]['Name']}")
+    else:
+        print("ERROR: BL006 not found after insertion")
+PYEOF]` CONFLICT -- GPO takes precedence |
+| GPO and MDM agree | `[OK]` No cipher conflict |
+| Only GPO sets cipher | `[i]` GPO value used, no MDM counterpart |
+
+**3b -- Startup Authentication (PIN):**
+
+| Condition | Verdict |
+|---|---|
+| GPO requires PIN but MDM says TPM-only | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/BL006_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "BL006",
+    "Name": "BLPolicyConflict",
+    "DisplayName": "BitLocker Group Policy vs MDM Conflict Detection",
+    "Category": "BitLocker",
+    "Description": "Detects group policy vs MDM conflicts that silently block BitLocker encryption. Reads GPO settings from HKLM:\\SOFTWARE\\Policies\\Microsoft\\FVE and MDM settings from PolicyManager, compares encryption method, startup authentication, recovery password, and PIN length. Checks MDMWinsOverGP assessment with BitLocker CSP limitation warning. Detects orphaned (tattooed) GPO settings from previous domain membership.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "gpo", "mdm", "conflict", "hybrid", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 5 check groups: (1) GPO-delivered BitLocker settings from FVE registry with cipher/TPM usage decode tables and legacy PCR validation subkey detection. (2) MDM-delivered BitLocker settings from PolicyManager with XML parsing for EncryptionMethodByDriveType and SystemDrivesRequireStartupAuthentication. (3) Conflict detection comparing encryption method, startup PIN, AD backup deadlock, and minimum PIN length between GPO and MDM. (4) MDMWinsOverGP assessment at PolicyManager/current/device/ControlPolicyConflict with BitLocker CSP limitation warning (MDMWinsOverGP does NOT fully apply to BitLocker CSP settings). (5) Orphaned GPO settings detection via domain-join state check with specific dangerous patterns (legacy PCR profiles, AD backup on non-domain device, orphaned PIN requirement)."
+}
+
+# Find insertion point -- after BL005
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL005':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL005 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL006 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl006 = [e for e in verify if e['Id'] == 'BL006']
+    if bl006:
+        print(f"BL006 found with Name={bl006[0]['Name']}")
+    else:
+        print("ERROR: BL006 not found after insertion")
+PYEOF]` CONFLICT -- blocks silent encryption |
+| GPO requires PIN, MDM silent encryption enabled | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/BL006_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "BL006",
+    "Name": "BLPolicyConflict",
+    "DisplayName": "BitLocker Group Policy vs MDM Conflict Detection",
+    "Category": "BitLocker",
+    "Description": "Detects group policy vs MDM conflicts that silently block BitLocker encryption. Reads GPO settings from HKLM:\\SOFTWARE\\Policies\\Microsoft\\FVE and MDM settings from PolicyManager, compares encryption method, startup authentication, recovery password, and PIN length. Checks MDMWinsOverGP assessment with BitLocker CSP limitation warning. Detects orphaned (tattooed) GPO settings from previous domain membership.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "gpo", "mdm", "conflict", "hybrid", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 5 check groups: (1) GPO-delivered BitLocker settings from FVE registry with cipher/TPM usage decode tables and legacy PCR validation subkey detection. (2) MDM-delivered BitLocker settings from PolicyManager with XML parsing for EncryptionMethodByDriveType and SystemDrivesRequireStartupAuthentication. (3) Conflict detection comparing encryption method, startup PIN, AD backup deadlock, and minimum PIN length between GPO and MDM. (4) MDMWinsOverGP assessment at PolicyManager/current/device/ControlPolicyConflict with BitLocker CSP limitation warning (MDMWinsOverGP does NOT fully apply to BitLocker CSP settings). (5) Orphaned GPO settings detection via domain-join state check with specific dangerous patterns (legacy PCR profiles, AD backup on non-domain device, orphaned PIN requirement)."
+}
+
+# Find insertion point -- after BL005
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL005':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL005 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL006 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl006 = [e for e in verify if e['Id'] == 'BL006']
+    if bl006:
+        print(f"BL006 found with Name={bl006[0]['Name']}")
+    else:
+        print("ERROR: BL006 not found after insertion")
+PYEOF]` PIN requirement blocks silent encryption |
+| GPO and MDM agree on PIN setting | `[OK]` No conflict |
+
+**3c -- AD Backup Deadlock:**
+
+| Condition | Verdict |
+|---|---|
+| GPO requires AD DS backup + machine NOT domain-joined | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/BL006_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "BL006",
+    "Name": "BLPolicyConflict",
+    "DisplayName": "BitLocker Group Policy vs MDM Conflict Detection",
+    "Category": "BitLocker",
+    "Description": "Detects group policy vs MDM conflicts that silently block BitLocker encryption. Reads GPO settings from HKLM:\\SOFTWARE\\Policies\\Microsoft\\FVE and MDM settings from PolicyManager, compares encryption method, startup authentication, recovery password, and PIN length. Checks MDMWinsOverGP assessment with BitLocker CSP limitation warning. Detects orphaned (tattooed) GPO settings from previous domain membership.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "gpo", "mdm", "conflict", "hybrid", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 5 check groups: (1) GPO-delivered BitLocker settings from FVE registry with cipher/TPM usage decode tables and legacy PCR validation subkey detection. (2) MDM-delivered BitLocker settings from PolicyManager with XML parsing for EncryptionMethodByDriveType and SystemDrivesRequireStartupAuthentication. (3) Conflict detection comparing encryption method, startup PIN, AD backup deadlock, and minimum PIN length between GPO and MDM. (4) MDMWinsOverGP assessment at PolicyManager/current/device/ControlPolicyConflict with BitLocker CSP limitation warning (MDMWinsOverGP does NOT fully apply to BitLocker CSP settings). (5) Orphaned GPO settings detection via domain-join state check with specific dangerous patterns (legacy PCR profiles, AD backup on non-domain device, orphaned PIN requirement)."
+}
+
+# Find insertion point -- after BL005
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL005':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL005 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL006 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl006 = [e for e in verify if e['Id'] == 'BL006']
+    if bl006:
+        print(f"BL006 found with Name={bl006[0]['Name']}")
+    else:
+        print("ERROR: BL006 not found after insertion")
+PYEOF]` DEADLOCK -- encryption can never succeed (HRESULT `0x80072f9a`) |
+| GPO requires AD DS backup + machine domain-joined + Intune-managed | `[]` Dual-escrow requirement in hybrid |
+
+**3d -- Minimum PIN Length:**
+
+| Condition | Verdict |
+|---|---|
+| GPO and MDM specify different PIN lengths | `[]` Warning |
+| GPO and MDM agree | `[OK]` No conflict |
+
+##### Check 4 -- MDMWinsOverGP Assessment
+
+Reads `MDMWinsOverGP` from `HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\ControlPolicyConflict`.
+
+> **Critical architectural fact:** `MDMWinsOverGP` only applies to settings governed by the Policy CSP that have explicit ADMX-backed or GPRegistryMapped mappings. Many BitLocker GPO settings lack a 1:1 mapping in the BitLocker CSP, so `MDMWinsOverGP=1` does NOT guarantee MDM supremacy for BitLocker specifically.
+
+| Condition | Verdict |
+|---|---|
+| `MDMWinsOverGP = 1` + GPO FVE settings exist | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/BL006_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "BL006",
+    "Name": "BLPolicyConflict",
+    "DisplayName": "BitLocker Group Policy vs MDM Conflict Detection",
+    "Category": "BitLocker",
+    "Description": "Detects group policy vs MDM conflicts that silently block BitLocker encryption. Reads GPO settings from HKLM:\\SOFTWARE\\Policies\\Microsoft\\FVE and MDM settings from PolicyManager, compares encryption method, startup authentication, recovery password, and PIN length. Checks MDMWinsOverGP assessment with BitLocker CSP limitation warning. Detects orphaned (tattooed) GPO settings from previous domain membership.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "gpo", "mdm", "conflict", "hybrid", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 5 check groups: (1) GPO-delivered BitLocker settings from FVE registry with cipher/TPM usage decode tables and legacy PCR validation subkey detection. (2) MDM-delivered BitLocker settings from PolicyManager with XML parsing for EncryptionMethodByDriveType and SystemDrivesRequireStartupAuthentication. (3) Conflict detection comparing encryption method, startup PIN, AD backup deadlock, and minimum PIN length between GPO and MDM. (4) MDMWinsOverGP assessment at PolicyManager/current/device/ControlPolicyConflict with BitLocker CSP limitation warning (MDMWinsOverGP does NOT fully apply to BitLocker CSP settings). (5) Orphaned GPO settings detection via domain-join state check with specific dangerous patterns (legacy PCR profiles, AD backup on non-domain device, orphaned PIN requirement)."
+}
+
+# Find insertion point -- after BL005
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL005':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL005 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL006 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl006 = [e for e in verify if e['Id'] == 'BL006']
+    if bl006:
+        print(f"BL006 found with Name={bl006[0]['Name']}")
+    else:
+        print("ERROR: BL006 not found after insertion")
+PYEOF]` FALSE SENSE OF SECURITY -- BitLocker CSP not fully covered |
+| `MDMWinsOverGP = 1` + no FVE conflicts | `[i]` Active but no conflicts |
+| Not set or = 0 + FVE + MDM settings exist | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/BL006_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "BL006",
+    "Name": "BLPolicyConflict",
+    "DisplayName": "BitLocker Group Policy vs MDM Conflict Detection",
+    "Category": "BitLocker",
+    "Description": "Detects group policy vs MDM conflicts that silently block BitLocker encryption. Reads GPO settings from HKLM:\\SOFTWARE\\Policies\\Microsoft\\FVE and MDM settings from PolicyManager, compares encryption method, startup authentication, recovery password, and PIN length. Checks MDMWinsOverGP assessment with BitLocker CSP limitation warning. Detects orphaned (tattooed) GPO settings from previous domain membership.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "gpo", "mdm", "conflict", "hybrid", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 5 check groups: (1) GPO-delivered BitLocker settings from FVE registry with cipher/TPM usage decode tables and legacy PCR validation subkey detection. (2) MDM-delivered BitLocker settings from PolicyManager with XML parsing for EncryptionMethodByDriveType and SystemDrivesRequireStartupAuthentication. (3) Conflict detection comparing encryption method, startup PIN, AD backup deadlock, and minimum PIN length between GPO and MDM. (4) MDMWinsOverGP assessment at PolicyManager/current/device/ControlPolicyConflict with BitLocker CSP limitation warning (MDMWinsOverGP does NOT fully apply to BitLocker CSP settings). (5) Orphaned GPO settings detection via domain-join state check with specific dangerous patterns (legacy PCR profiles, AD backup on non-domain device, orphaned PIN requirement)."
+}
+
+# Find insertion point -- after BL005
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL005':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL005 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL006 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl006 = [e for e in verify if e['Id'] == 'BL006']
+    if bl006:
+        print(f"BL006 found with Name={bl006[0]['Name']}")
+    else:
+        print("ERROR: BL006 not found after insertion")
+PYEOF]` GPO takes precedence, Intune may be ignored |
+| Not set or = 0 + no FVE settings | `[OK]` Standard behavior |
+
+##### Check 5 -- Orphaned GPO Settings Detection
+
+Detects "tattooed" FVE registry values left behind from previous domain membership. Uses `(Get-CimInstance Win32_ComputerSystem).PartOfDomain` to determine domain-join state.
+
+| Condition | Verdict |
+|---|---|
+| FVE has values + machine NOT domain-joined | `[python3 << 'PYEOF'
+import json
+
+# Read the script
+with open('/tmp/BL006_full.ps1', 'r') as f:
+    script_body = f.read()
+
+# Read the catalog
+with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+    catalog = json.load(f)
+
+# Build the new entry
+entry = {
+    "Id": "BL006",
+    "Name": "BLPolicyConflict",
+    "DisplayName": "BitLocker Group Policy vs MDM Conflict Detection",
+    "Category": "BitLocker",
+    "Description": "Detects group policy vs MDM conflicts that silently block BitLocker encryption. Reads GPO settings from HKLM:\\SOFTWARE\\Policies\\Microsoft\\FVE and MDM settings from PolicyManager, compares encryption method, startup authentication, recovery password, and PIN length. Checks MDMWinsOverGP assessment with BitLocker CSP limitation warning. Detects orphaned (tattooed) GPO settings from previous domain membership.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Script": script_body,
+    "Tags": ["bitlocker", "gpo", "mdm", "conflict", "hybrid", "diagnostic"],
+    "Version": "1.0",
+    "Notes": "Read-only diagnostic. 5 check groups: (1) GPO-delivered BitLocker settings from FVE registry with cipher/TPM usage decode tables and legacy PCR validation subkey detection. (2) MDM-delivered BitLocker settings from PolicyManager with XML parsing for EncryptionMethodByDriveType and SystemDrivesRequireStartupAuthentication. (3) Conflict detection comparing encryption method, startup PIN, AD backup deadlock, and minimum PIN length between GPO and MDM. (4) MDMWinsOverGP assessment at PolicyManager/current/device/ControlPolicyConflict with BitLocker CSP limitation warning (MDMWinsOverGP does NOT fully apply to BitLocker CSP settings). (5) Orphaned GPO settings detection via domain-join state check with specific dangerous patterns (legacy PCR profiles, AD backup on non-domain device, orphaned PIN requirement)."
+}
+
+# Find insertion point -- after BL005
+insert_idx = None
+for i, e in enumerate(catalog):
+    if e['Id'] == 'BL005':
+        insert_idx = i + 1
+        break
+
+if insert_idx is None:
+    print("ERROR: Could not find BL005 in catalog")
+else:
+    catalog.insert(insert_idx, entry)
+    with open('Scriptlets/ScriptletCatalog.json', 'w') as f:
+        json.dump(catalog, f, indent=2, ensure_ascii=False)
+    print(f"SUCCESS: BL006 inserted at index {insert_idx}")
+    print(f"Catalog now has {len(catalog)} entries")
+    
+    # Verify
+    with open('Scriptlets/ScriptletCatalog.json', 'r') as f:
+        verify = json.load(f)
+    bl006 = [e for e in verify if e['Id'] == 'BL006']
+    if bl006:
+        print(f"BL006 found with Name={bl006[0]['Name']}")
+    else:
+        print("ERROR: BL006 not found after insertion")
+PYEOF]` Orphaned -- tattooed from previous domain |
+| FVE has values + domain-joined + Intune-managed (hybrid) | `[]` GPO settings in hybrid -- review for conflicts |
+| FVE has values + domain-joined only | `[OK]` Expected from Active Directory |
+| No FVE values | `[OK]` Clean registry |
+
+**Specific dangerous orphan patterns flagged:**
+- `OSPlatformValidation_BIOS` / `OSPlatformValidation_UEFI` subkeys (primary cause of `0x80310059`)
+- `OSRequireActiveDirectoryBackup = 1` on non-domain device (causes `0x80072f9a`)
+- `UseTPMPIN = 1` on non-domain device (blocks silent MDM encryption)
+
+#### Example Output (Healthy System, Intune-Managed, No GPO)
+
+```
+=== BitLocker Group Policy vs MDM Conflict Detection ===
+
+--- GPO BitLocker Settings (FVE Registry) ---
+[OK]  GPO BitLocker Settings
+       HKLM:\...\FVE path does not exist. No GPO BitLocker settings are configured.
+
+--- MDM BitLocker Settings (PolicyManager) ---
+[OK]  RequireDeviceEncryption (MDM)
+       RequireDeviceEncryption = 1. MDM requires device encryption.
+[i]   OS Drive Cipher (MDM)
+       EncryptionMethodByDriveType OS cipher = 7 (XTS-AES 256-bit)
+[i]   Silent Encryption (MDM)
+       AllowWarningForOtherDiskEncryption = 0. Silent encryption enabled (no user warnings).
+
+--- Conflict Detection ---
+[OK]  Conflict Summary
+       No GPO BitLocker settings present. No GPO vs MDM conflicts possible.
+
+--- MDMWinsOverGP Assessment ---
+[OK]  MDMWinsOverGP Assessment
+       MDMWinsOverGP is not set. Standard GPO precedence (default behavior). No active conflict detected.
+
+--- Orphaned GPO Settings ---
+[OK]  Orphaned GPO Settings
+       No GPO BitLocker settings in FVE registry. No orphaned settings possible.
+
+RESULT: No policy conflicts detected. GPO and MDM BitLocker settings are consistent.
+
+NEXT:   If conflicts found         -> set MDMWinsOverGP=1, or remove conflicting GPO settings
+        If orphaned GPO settings   -> clear HKLM:\SOFTWARE\Policies\Microsoft\FVE manually
+        If no conflicts            -> run BL007 BLEventAnalysis for the failure timeline
+```
+
+#### Scope Boundaries
+
+| Concern | Handled By |
+|---|---|
+| Volume encryption status, protection, key protectors, drive letters, BDESVC | BL001 BLStatusSnapshot |
+| TPM presence, state, version, firmware, lockout, attestation | BL002 BLTpmHealth |
+| UEFI/BIOS, Secure Boot, GPT/MBR, system partition, Modern Standby | BL003 BLHardwarePrereqs |
+| MDM enrollment, BitLocker CSP decode, policy-hardware cross-reference, IME logs | BL004 BLIntunePolicy |
+| Escrow policy, AAD identity, escrow events, cloud connectivity, key protector status, WinRE | BL005 BLEscrowCheck |
+| Event log timeline, error code translation | BL007 BLEventAnalysis |
+| Encryption readiness dry run | BL008 BLReadinessCheck |
+| TPM repair, key protector remediation | BL009 BLTpmRemediation |
+| Forced encryption | BL010 BLForceEncrypt |
+
+**Overlap notes:**
+- BL004 reads `PolicyManager\current\device\BitLocker` to report MDM configuration. BL006 reads the same path to compare against GPO. Different question, complementary answers.
+- BL005 reads 3 specific FVE keys (OSRequireActiveDirectoryBackup, FDVRequireActiveDirectoryBackup, OSActiveDirectoryInfoToStore) for escrow pipeline analysis. BL006 reads the full FVE hive for encryption method, startup auth, and recovery settings. Disjoint policy surfaces.
+- DEF005 performs an analogous MDMWinsOverGP assessment for Defender CSP. BL006 does the same for BitLocker CSP. Same architectural insight (MDMWinsOverGP does NOT apply to all CSP settings), different policy domains.
+
+#### Version History
+
+| Version | Changes |
+|---|---|
+| 1.0 | Initial build. 5 check groups: GPO-delivered BitLocker settings from FVE registry with cipher method decode table (3=AES-CBC-128, 4=AES-CBC-256, 6=XTS-AES-128, 7=XTS-AES-256), TPM usage decode table (0=Do not allow, 1=Require, 2=Allow) for UseTPM/UseTPMPIN/UseTPMKey/UseTPMKeyPIN, MinimumPIN, OSRecovery, OSRequireActiveDirectoryBackup, OSActiveDirectoryInfoToStore, EnableBDEWithNoTPM, plus legacy platform validation subkey (OSPlatformValidation_BIOS/UEFI) detection. MDM-delivered BitLocker settings from PolicyManager with RequireDeviceEncryption, EncryptionMethodByDriveType XML parsing for OS cipher, SystemDrivesRequireStartupAuthentication XML parsing for PIN requirement, SystemDrivesMinimumPINLength, AllowWarningForOtherDiskEncryption silent encryption detection. Side-by-side conflict detection: encryption method mismatch, startup PIN vs silent encryption conflict, AD backup deadlock (OSRequireActiveDirectoryBackup=1 on non-domain device with HRESULT 0x80072f9a), minimum PIN length mismatch. MDMWinsOverGP assessment from PolicyManager/current/device/ControlPolicyConflict with BitLocker CSP limitation warning. Orphaned GPO settings detection via Win32_ComputerSystem.PartOfDomain with hybrid environment awareness and specific dangerous orphan patterns (legacy PCR profiles, AD backup on non-domain, orphaned PIN requirement). |
 
 ---
 
