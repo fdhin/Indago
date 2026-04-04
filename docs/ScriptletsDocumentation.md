@@ -745,6 +745,175 @@ WU003 proves the TCP socket opens. WU004 proves the TLS handshake will succeed o
 
 ---
 
+### WU005 -- WUComponentHealth
+
+**Version:** 1.0
+**Category:** WindowsUpdate
+**Context:** System
+**Type:** Diagnostic (read-only)
+
+#### Purpose
+
+Checks whether the Windows servicing stack itself is healthy. When WU001 through WU004 all pass but updates still fail, the problem often lies in component store corruption -- damaged manifests, missing payloads, or orphaned servicing state. WU005 answers: "Is the servicing infrastructure intact?"
+
+This scriptlet runs DISM health checks (non-destructive), parses CBS.log for corruption indicators, extracts the last SFC result, and analyzes component store sizing. It does NOT modify the system or run repairs -- that is WU010's job.
+
+> **Timing note:** This scriptlet runs two DISM subprocess calls and may take 30-60 seconds -- significantly slower than most triage scriptlets.
+
+#### Usage
+
+```powershell
+Invoke-Indago -Name WUComponentHealth
+```
+
+#### Parameters
+
+None.
+
+#### What It Checks
+
+##### Check 1 -- DISM Health Check (Component Store Registry Flags)
+
+Runs `Repair-WindowsImage -Online -CheckHealth` to query the CBS registry for pre-existing corruption flags. Falls back to `dism.exe /Online /Cleanup-Image /CheckHealth` if the PowerShell cmdlet fails.
+
+| Health State | Verdict | Meaning |
+|---|---|---|
+| `Healthy` | `[OK]` | No corruption flags set in the CBS registry |
+| `Repairable` | `[!!]` | Corruption detected; `DISM /RestoreHealth` can fix it |
+| `NonRepairable` | `[!!]` | Corruption beyond DISM's ability to fix; in-place upgrade needed |
+
+**Important nuance:** `/CheckHealth` only queries registry flags (`CorruptionDetectedDuringAcr`, `Unserviceable`). It does NOT scan physical files. A system with silent bit-rot or externally-deleted DLLs will report `Healthy`. This is why Checks 2 and 3 (CBS.log analysis and SFC results) are essential complements -- they catch what `/CheckHealth` misses.
+
+##### Check 2 -- CBS.log Analysis (Last 200 Lines)
+
+Reads the tail of `%SystemRoot%\Logs\CBS\CBS.log` (last 200 lines) and scans for corruption indicators. CBS.log is the ground truth for Component-Based Servicing -- DISM, SFC, and TiWorker.exe operations are all recorded here.
+
+**Critical HRESULT patterns (component store corruption):**
+
+| HRESULT | Name | Meaning |
+|---|---|---|
+| `0x80073712` | `ERROR_SXS_COMPONENT_STORE_CORRUPT` | WinSxS store fundamentally inconsistent |
+| `0x800F081F` | `CBS_E_SOURCE_MISSING` | Repair payload not found locally or online |
+| `0x800F0831` | `CBS_E_STORE_CORRUPTION` | Orphaned manifest blocking dependency chains |
+| `0x800736CC` | `ERROR_SXS_FILE_HASH_MISMATCH` | File hash does not match manifest |
+
+**Warning patterns (transient or third-party issues):**
+
+| HRESULT | Name | Meaning |
+|---|---|---|
+| `0x800F0823` | `CBS_E_NEW_SERVICING_STACK_REQUIRED` | Servicing Stack Update outdated for this update |
+| `0x800F0982` | `PSFX_E_MATCHING_BINARY_MISSING` | Aborted or rolled-back update |
+| `0x8007000D` | `ERROR_INVALID_DATA` | Unreadable data or malformed manifest |
+| `0x80070020` | `ERROR_SHARING_VIOLATION` | File locked by AV/EDR during servicing |
+
+Also scans for text markers: `Store corruption` and `Exec: Error`.
+
+**Verdict logic:**
+- Critical HRESULTs or text markers found -> `[!!]` with count and last 3 unique matches
+- Warning HRESULTs only -> `[!]` with count and last 3 unique matches
+- No patterns found -> `[OK]`
+- CBS.log unreadable -> `[i]`
+
+##### Check 3 -- Last SFC Result
+
+Parses CBS.log (last 5000 lines) for the most recent `sfc /scannow` outcome. SFC distinguishes its entries with the `[SR]` tag prefix. WU005 does NOT run SFC -- it only reads the result of the last execution.
+
+| CBS.log Result String | Verdict | Meaning |
+|---|---|---|
+| `did not find any integrity violations` | `[OK]` | All protected files match their manifests |
+| `found corrupt files and successfully repaired them` | `[i]` | SFC repaired files; store had corruption but self-healed |
+| `found corrupt files but was unable to fix some of them` | `[!!]` | Unfixable corruption; WU010 needed |
+| `could not perform the requested operation` | `[!]` | SFC failed to run; pending reboot or TrustedInstaller issue |
+| No result found | `[i]` | SFC has not been run recently or log has rolled over |
+
+Reports the timestamp of the last SFC run when extractable from the log line prefix.
+
+**Design note:** The 5000-line scan depth (vs. 200 for Check 2) is necessary because SFC results can be pushed far back in the log by subsequent servicing activity.
+
+##### Check 4 -- Component Store Size (DISM /AnalyzeComponentStore)
+
+Runs `dism.exe /Online /Cleanup-Image /AnalyzeComponentStore` and parses stdout for 7 metrics. There is no WMI/CIM class that exposes accurate WinSxS sizing. Standard `Get-ChildItem` sizing is fatally flawed due to NTFS hard links counting the same physical sectors multiple times.
+
+**Extracted metrics:**
+
+| Metric | Source String |
+|---|---|
+| Gross directory size | `Windows Explorer Reported Size of Component Store :` |
+| Actual (deduplicated) size | `Actual Size of Component Store :` |
+| Shared with Windows | `Shared with Windows :` |
+| Superseded payloads | `Backups and Disabled Features :` |
+| Reclaimable packages | `Number of Reclaimable Packages :` |
+| Cleanup recommended | `Component Store Cleanup Recommended :` |
+| Last cleanup date | `Date of Last Cleanup :` |
+
+**Verdict logic:**
+- Cleanup not recommended -> `[OK]` with actual size and key metrics
+- Cleanup recommended -> `[!]` with sizes and concrete cleanup command
+- Parse failure -> `[!]` with raw output excerpt
+
+#### Example Output (Healthy System)
+
+```
+=== Component Store & System Integrity ===
+
+[i]   This scriptlet runs DISM operations and may take 30-60 seconds.
+
+--- DISM Health Check ---
+[OK]  Component Store Health (Registry Flags)
+       No component store corruption detected. Store is healthy.
+       Note: This checks registry state only. CBS.log analysis (below)
+       validates physical file integrity that may not be reflected here.
+
+--- CBS.log Analysis ---
+[OK]  CBS.log (Last 200 Lines)
+       No corruption patterns found in recent CBS activity.
+
+--- Last SFC Result ---
+[i]   System File Checker
+       No SFC result found in CBS.log (last 5000 lines).
+       SFC has not been run recently, or the log has rolled over.
+       This is informational -- if DISM reports healthy and no CBS
+       errors found, the component store is likely intact.
+
+--- Component Store Size ---
+[OK]  Component Store Analysis
+       Actual size: 5.12 GB (reported: 8.42 GB due to hard links).
+       Shared with Windows: 3.30 GB. Backups/disabled: 1.82 GB.
+       Reclaimable packages: 0.
+       Last cleanup: 2026-03-15.
+       Component Store Cleanup Recommended: No.
+
+RESULT: No issues detected. Component store and servicing stack appear healthy.
+
+NEXT:   If corruption detected   -> run WU010 WUServicingRepair (DISM /RestoreHealth + SFC)
+        If component store large -> run: DISM /Online /Cleanup-Image /StartComponentCleanup
+        If SFC found unfixable   -> run WU010 WUServicingRepair for full repair chain
+        If clean                 -> issue is elsewhere; run WU006 WUEventTimeline
+```
+
+#### Scope Boundaries
+
+WU005 is strictly scoped to servicing stack diagnostics. The following concerns are handled by other scriptlets:
+
+| Concern | Handled By |
+|---|---|
+| WU services (wuauserv, BITS, CryptSvc, UsoSvc), disk space, reboot flags, history | WU001 WUQuickHealth |
+| GPO/MDM/WSUS policy, deferral, pause, servicing policies | WU002 WUPolicyAudit |
+| DNS, HTTPS connectivity, proxy, VPN, metered | WU003 WUNetworkCheck |
+| TLS 1.2 Schannel, .NET crypto, clock drift, root certs, FIPS | WU004 WUTlsCertCheck |
+| Event log timeline (Servicing events, WindowsUpdateClient) | WU006 WUEventTimeline |
+| Third-party AV, hardware, Defender | WU007 WUEnvironmentAudit |
+| Service reset, cache clear | WU009 WUServiceReset |
+| DISM /RestoreHealth, SFC /scannow, full servicing fix | WU010 WUServicingRepair |
+
+#### Version History
+
+| Version | Changes |
+|---|---|
+| 1.0 | Initial build. 4 check groups: DISM health via Repair-WindowsImage -CheckHealth with dism.exe fallback (3-state ImageHealthState enum, registry-only limitation documented), CBS.log tail analysis (last 200 lines, 8 corruption HRESULTs from WU006 research: 4 critical + 4 warning, plus Store corruption and Exec Error text markers), last SFC result (5000 line scan depth, [SR] tag parsing, 4 outcome strings with timestamp extraction), component store sizing via dism.exe /AnalyzeComponentStore (7 metrics including last cleanup date, regex stdout parsing -- no WMI/CIM alternative exists due to NTFS hard link sizing illusion). |
+
+---
+
 ## Defender & AV Suite
 
 ### DEF001 -- DEFStatusTriage
