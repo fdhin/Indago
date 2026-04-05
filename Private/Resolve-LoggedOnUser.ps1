@@ -14,8 +14,9 @@ function Resolve-LoggedOnUser {
     [OutputType([PSCustomObject])]
     param()
 
-    # Bug #11 fix: always query the live session. Caching is dangerous in
-    # persistent RMM agents — if user A logs off and user B logs on, the
+    # Always query the live session rather than returning a cached identity.
+    # Caching the lookup across multiple task executions in persistent RMM
+    # agents is dangerous — if user A logs off and user B logs on, a persistent
     # cache would forever return user A's identity.
 
     $userInfo = $null
