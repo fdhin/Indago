@@ -1,3 +1,37 @@
+function Get-IndagoExecutionContext {
+    param(
+        [string]$TaskContext,
+        [switch]$ForceSystem
+    )
+
+    if ($ForceSystem.IsPresent) {
+        return [PSCustomObject]@{
+            Context = 'System'
+            VerboseMessage = 'Invoke-Indago: Forced to System context via -AsSystem switch.'
+        }
+    }
+
+    if ($TaskContext -ne 'Auto') {
+        return [PSCustomObject]@{
+            Context = $TaskContext
+            VerboseMessage = $null
+        }
+    }
+
+    $loggedOnUser = Resolve-LoggedOnUser
+    if ($null -ne $loggedOnUser) {
+        return [PSCustomObject]@{
+            Context = 'User'
+            VerboseMessage = "Invoke-Indago: Auto-resolved to User context ($($loggedOnUser.FullName))"
+        }
+    }
+
+    return [PSCustomObject]@{
+        Context = 'System'
+        VerboseMessage = 'Invoke-Indago: Auto-resolved to System context (no user logged on)'
+    }
+}
+
 function Invoke-Indago {
     <#
     .SYNOPSIS
@@ -103,21 +137,10 @@ function Invoke-Indago {
     #endregion
 
     #region Determine execution context
-    $execContext = $task.ExecutionContext
-    if ($AsSystem.IsPresent) {
-        $execContext = 'System'
-        Write-Verbose 'Invoke-Indago: Forced to System context via -AsSystem switch.'
-    }
-    elseif ($execContext -eq 'Auto') {
-        $loggedOnUser = Resolve-LoggedOnUser
-        if ($null -ne $loggedOnUser) {
-            $execContext = 'User'
-            Write-Verbose "Invoke-Indago: Auto-resolved to User context ($($loggedOnUser.FullName))"
-        }
-        else {
-            $execContext = 'System'
-            Write-Verbose 'Invoke-Indago: Auto-resolved to System context (no user logged on)'
-        }
+    $contextResolution = Get-IndagoExecutionContext -TaskContext $task.ExecutionContext -ForceSystem:$AsSystem
+    $execContext = $contextResolution.Context
+    if ($null -ne $contextResolution.VerboseMessage) {
+        Write-Verbose $contextResolution.VerboseMessage
     }
     #endregion
 
