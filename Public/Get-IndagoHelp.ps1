@@ -34,9 +34,9 @@ function Get-IndagoHelp {
         return
     }
 
-    $task = $catalog | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
+    $taskCollection = $catalog.Where({ $_.Name -eq $Name }, 'First')
 
-    if ($null -eq $task) {
+    if ($taskCollection.Count -eq 0) {
         Write-Warning "Scriptlet not found: $Name"
 
         # Suggest close matches
@@ -49,6 +49,8 @@ function Get-IndagoHelp {
         }
         return
     }
+
+    $task = $taskCollection[0]
 
     Show-TaskHelp -Task $task
 }

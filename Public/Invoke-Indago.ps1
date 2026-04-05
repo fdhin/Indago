@@ -72,8 +72,8 @@ function Invoke-Indago {
         return
     }
 
-    $task = $catalog | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
-    if ($null -eq $task) {
+    $taskCollection = $catalog.Where({ $_.Name -eq $Name }, 'First')
+    if ($taskCollection.Count -eq 0) {
         Write-Error "Scriptlet not found: $Name. Use Get-IndagoList to see available tasks."
         # Suggest close matches
         $suggestions = @($catalog | Where-Object { $_.Name -like "*$Name*" })
@@ -82,6 +82,8 @@ function Invoke-Indago {
         }
         return
     }
+
+    $task = $taskCollection[0]
 
     Write-Verbose "Invoke-Indago: Found scriptlet $($task.Id) - $($task.DisplayName)"
     #endregion
