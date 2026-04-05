@@ -41,13 +41,15 @@ function Get-IndagoList {
         }
     }
 
-    # Format as a clean table for console readability
-    $catalog | ForEach-Object {
-        [PSCustomObject]@{
-            Name        = $_.Name
-            Category    = $_.Category
-            Context     = $_.ExecutionContext
-            Description = $_.DisplayName
-        }
-    } | Format-Table -AutoSize -Wrap
+    # Format as a clean table for console readability, grouped by category
+    $catalog |
+        Sort-Object -Property Category, Name |
+        ForEach-Object {
+            [PSCustomObject]@{
+                Name        = $_.Name
+                Category    = $_.Category
+                Context     = $_.ExecutionContext
+                Description = $_.DisplayName
+            }
+        } | Format-Table -AutoSize -Wrap
 }
