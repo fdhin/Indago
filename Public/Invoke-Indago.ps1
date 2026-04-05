@@ -1,3 +1,63 @@
+function Resolve-ExecutionContext {
+    param(
+        [string]$TaskContext,
+        [switch]$AsSystem
+    )
+
+    $execContext = $TaskContext
+    if ($AsSystem.IsPresent) {
+        $execContext = 'System'
+        Write-Verbose 'Invoke-Indago: Forced to System context via -AsSystem switch.'
+    }
+    elseif ($execContext -eq 'Auto') {
+        $loggedOnUser = Resolve-LoggedOnUser
+        if ($null -ne $loggedOnUser) {
+            $execContext = 'User'
+            Write-Verbose "Invoke-Indago: Auto-resolved to User context ($($loggedOnUser.FullName))"
+        }
+        else {
+            $execContext = 'System'
+            Write-Verbose 'Invoke-Indago: Auto-resolved to System context (no user logged on)'
+        }
+    }
+    return $execContext
+}
+
+function Build-ScriptletContent {
+    param(
+        [object]$Task,
+        [hashtable]$BoundParams
+    )
+
+    $scriptText = $Task.Script
+    $paramBlock = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($key in $BoundParams.Keys) {
+        $value = $BoundParams[$key]
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $escapedValue = $value -replace "'", "''"
+            $paramBlock.Add("`$$key = '$escapedValue'")
+        }
+        else {
+            if ($null -ne $Task.Parameters -and $null -ne $Task.Parameters.$key) {
+                $defaultVal = $Task.Parameters.$key.Default
+                if (-not [string]::IsNullOrWhiteSpace($defaultVal)) {
+                    $escapedDefault = $defaultVal -replace "'", "''"
+                    $paramBlock.Add("`$$key = '$escapedDefault'")
+                }
+                else {
+                    $paramBlock.Add("`$$key = `$null")
+                }
+            }
+            else {
+                $paramBlock.Add("`$$key = `$null")
+            }
+        }
+    }
+
+    return ($paramBlock -join "`n") + "`n" + $scriptText
+}
+
 function Invoke-Indago {
     <#
     .SYNOPSIS
@@ -103,29 +163,10 @@ function Invoke-Indago {
     #endregion
 
     #region Determine execution context
-    $execContext = $task.ExecutionContext
-    if ($AsSystem.IsPresent) {
-        $execContext = 'System'
-        Write-Verbose 'Invoke-Indago: Forced to System context via -AsSystem switch.'
-    }
-    elseif ($execContext -eq 'Auto') {
-        $loggedOnUser = Resolve-LoggedOnUser
-        if ($null -ne $loggedOnUser) {
-            $execContext = 'User'
-            Write-Verbose "Invoke-Indago: Auto-resolved to User context ($($loggedOnUser.FullName))"
-        }
-        else {
-            $execContext = 'System'
-            Write-Verbose 'Invoke-Indago: Auto-resolved to System context (no user logged on)'
-        }
-    }
+    $execContext = Resolve-ExecutionContext -TaskContext $task.ExecutionContext -AsSystem:$AsSystem.IsPresent
     #endregion
 
     #region Build the script with parameter injection
-    $scriptText = $task.Script
-
-    # Inject Param1-Param5 as variables at the top of the script
-    $paramBlock = [System.Collections.Generic.List[string]]::new()
     $boundParams = @{
         'Param1' = $Param1
         'Param2' = $Param2
@@ -133,33 +174,7 @@ function Invoke-Indago {
         'Param4' = $Param4
         'Param5' = $Param5
     }
-
-    foreach ($key in $boundParams.Keys) {
-        $value = $boundParams[$key]
-        if (-not [string]::IsNullOrWhiteSpace($value)) {
-            # Escape single quotes in value for safe injection
-            $escapedValue = $value -replace "'", "''"
-            $paramBlock.Add("`$$key = '$escapedValue'")
-        }
-        else {
-            # Apply defaults from the scriptlet definition if available
-            if ($null -ne $task.Parameters -and $null -ne $task.Parameters.$key) {
-                $defaultVal = $task.Parameters.$key.Default
-                if (-not [string]::IsNullOrWhiteSpace($defaultVal)) {
-                    $escapedDefault = $defaultVal -replace "'", "''"
-                    $paramBlock.Add("`$$key = '$escapedDefault'")
-                }
-                else {
-                    $paramBlock.Add("`$$key = `$null")
-                }
-            }
-            else {
-                $paramBlock.Add("`$$key = `$null")
-            }
-        }
-    }
-
-    $fullScript = ($paramBlock -join "`n") + "`n" + $scriptText
+    $fullScript = Build-ScriptletContent -Task $task -BoundParams $boundParams
     Write-Verbose "Invoke-Indago: Script prepared ($($fullScript.Length) chars), context: $execContext"
     #endregion
 
