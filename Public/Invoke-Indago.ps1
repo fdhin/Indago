@@ -66,8 +66,8 @@ function Invoke-Indago {
     #endregion
 
     #region Look up scriptlet
-    $catalog = @($script:IndagoState.ScriptletCatalog)
-    if ($catalog.Count -eq 0) {
+    $catalog = $script:IndagoState.ScriptletCatalog
+    if ($null -eq $catalog -or $catalog.Count -eq 0) {
         Write-Error 'No scriptlets loaded. The catalog may be missing or invalid.'
         return
     }
@@ -76,8 +76,8 @@ function Invoke-Indago {
     if ($null -eq $task) {
         Write-Error "Scriptlet not found: $Name. Use Get-IndagoList to see available tasks."
         # Suggest close matches
-        $suggestions = @($catalog | Where-Object { $_.Name -like "*$Name*" })
-        if ($suggestions.Count -gt 0) {
+        $suggestions = $catalog | Where-Object { $_.Name -like "*$Name*" }
+        if ($null -ne $suggestions -and $suggestions.Count -gt 0) {
             Write-Warning "Did you mean: $($suggestions.Name -join ', ')?"
         }
         return
