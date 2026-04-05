@@ -159,7 +159,7 @@ function Invoke-Indago {
         }
     }
 
-    $fullScript = ($paramBlock -join "`n") + "`n" + $scriptText
+    $fullScript = "$($paramBlock -join "`n")`n$scriptText"
     Write-Verbose "Invoke-Indago: Script prepared ($($fullScript.Length) chars), context: $execContext"
     #endregion
 
