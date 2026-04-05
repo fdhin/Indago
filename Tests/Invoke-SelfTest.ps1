@@ -196,6 +196,10 @@ if ($manifestValid -and $null -ne $manifest) {
 . (Join-Path $PSScriptRoot 'Test-InvokeIndago.ps1')
 #endregion
 
+#region Test 6: Invoke-AsUser
+. (Join-Path $PSScriptRoot 'Test-InvokeAsUser.ps1')
+#endregion
+
 #region Summary
 Write-Host ''
 Write-Host '========================================' -ForegroundColor Cyan
