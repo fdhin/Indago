@@ -45,6 +45,15 @@ function Import-ScriptletCatalog {
     $validatedCatalog = [System.Collections.Generic.List[PSCustomObject]]::new()
     $catalogArray = @($catalog)
 
+    function Write-ValidationError {
+        param (
+            [string]$Id,
+            [string]$Message
+        )
+        Write-Warning "Import-ScriptletCatalog: Scriptlet $Id $Message"
+        return $false
+    }
+
     foreach ($entry in $catalogArray) {
         $isValid = $true
         $entryId = if ($null -ne $entry.Id) { $entry.Id } else { '(unknown)' }
@@ -53,16 +62,14 @@ function Import-ScriptletCatalog {
         foreach ($field in $requiredFields) {
             $value = $entry.$field
             if ($null -eq $value -or ([string]$value).Trim() -eq '') {
-                Write-Warning "Import-ScriptletCatalog: Scriptlet $entryId is missing required field: $field"
-                $isValid = $false
+                $isValid = Write-ValidationError -Id $entryId -Message "is missing required field: $field"
             }
         }
         #endregion
 
         #region Validate ExecutionContext
         if ($null -ne $entry.ExecutionContext -and $entry.ExecutionContext -notin $validContexts) {
-            Write-Warning "Import-ScriptletCatalog: Scriptlet $entryId has invalid ExecutionContext: $($entry.ExecutionContext). Must be one of: $($validContexts -join ', ')"
-            $isValid = $false
+            $isValid = Write-ValidationError -Id $entryId -Message "has invalid ExecutionContext: $($entry.ExecutionContext). Must be one of: $($validContexts -join ', ')"
         }
         #endregion
 
@@ -72,16 +79,14 @@ function Import-ScriptletCatalog {
                 $null = [scriptblock]::Create($entry.Script)
             }
             catch {
-                Write-Warning "Import-ScriptletCatalog: Scriptlet $entryId has a script syntax error: $($_.Exception.Message)"
-                $isValid = $false
+                $isValid = Write-ValidationError -Id $entryId -Message "has a script syntax error: $($_.Exception.Message)"
             }
         }
         #endregion
 
         #region Validate Name is alphanumeric (no spaces or special chars)
         if ($null -ne $entry.Name -and $entry.Name -notmatch '^[A-Za-z0-9]+$') {
-            Write-Warning "Import-ScriptletCatalog: Scriptlet $entryId Name contains invalid characters: $($entry.Name). Use alphanumeric only."
-            $isValid = $false
+            $isValid = Write-ValidationError -Id $entryId -Message "Name contains invalid characters: $($entry.Name). Use alphanumeric only."
         }
         #endregion
 
