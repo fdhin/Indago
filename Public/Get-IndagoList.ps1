@@ -41,11 +41,15 @@ function Get-IndagoList {
         }
     }
 
-    # Format as a clean table for console readability, grouped by category
+    # Format as a clean table for console readability, grouped by category.
+    # Sort by Id within each category — lower numbers are safe read-only triage,
+    # higher numbers are deeper diagnostics. This guides techs through the
+    # correct workflow order.
     $catalog |
-        Sort-Object -Property Category, Name |
+        Sort-Object -Property Category, Id |
         ForEach-Object {
             [PSCustomObject]@{
+                Id          = $_.Id
                 Name        = $_.Name
                 Category    = $_.Category
                 Context     = $_.ExecutionContext
