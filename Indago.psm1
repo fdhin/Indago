@@ -359,8 +359,6 @@ namespace RunAsUser
             IntPtr out_read = IntPtr.Zero;
             IntPtr out_write = IntPtr.Zero;
 
-            // R2-Bug #3 fix: master try/finally so pipe handles are cleaned up
-            // even if GetSessionUserToken or CreateEnvironmentBlock throws
             try
             {
                 NativeHelpers.SECURITY_ATTRIBUTES saAttr = new NativeHelpers.SECURITY_ATTRIBUTES();
