@@ -1,3 +1,26 @@
+function Get-ExplorerProcessOwner {
+    try {
+        $explorerProc = Get-CimInstance -ClassName Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction Stop |
+            Select-Object -First 1
+
+        if ($null -ne $explorerProc) {
+            $ownerResult = Invoke-CimMethod -InputObject $explorerProc -MethodName GetOwner -ErrorAction Stop
+            if ($ownerResult.ReturnValue -eq 0) {
+                return [PSCustomObject]@{
+                    UserName = $ownerResult.User
+                    Domain   = $ownerResult.Domain
+                    FullName = "$($ownerResult.Domain)\$($ownerResult.User)"
+                    Source   = 'Explorer.exe'
+                }
+            }
+        }
+    }
+    catch {
+        Write-Verbose "Resolve-LoggedOnUser: Explorer.exe owner query failed: $($_.Exception.Message)"
+    }
+    return $null
+}
+
 function Resolve-LoggedOnUser {
     <#
     .SYNOPSIS
@@ -51,25 +74,9 @@ function Resolve-LoggedOnUser {
 
     #region Strategy 2: Explorer.exe process owner (fallback)
     if ($null -eq $userInfo) {
-        try {
-            $explorerProc = Get-CimInstance -ClassName Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction Stop |
-                Select-Object -First 1
-
-            if ($null -ne $explorerProc) {
-                $ownerResult = Invoke-CimMethod -InputObject $explorerProc -MethodName GetOwner -ErrorAction Stop
-                if ($ownerResult.ReturnValue -eq 0) {
-                    $userInfo = [PSCustomObject]@{
-                        UserName = $ownerResult.User
-                        Domain   = $ownerResult.Domain
-                        FullName = "$($ownerResult.Domain)\$($ownerResult.User)"
-                        Source   = 'Explorer.exe'
-                    }
-                    Write-Verbose "Resolve-LoggedOnUser: Found user via Explorer.exe owner: $($userInfo.FullName)"
-                }
-            }
-        }
-        catch {
-            Write-Verbose "Resolve-LoggedOnUser: Explorer.exe owner query failed: $($_.Exception.Message)"
+        $userInfo = Get-ExplorerProcessOwner
+        if ($null -ne $userInfo) {
+            Write-Verbose "Resolve-LoggedOnUser: Found user via Explorer.exe owner: $($userInfo.FullName)"
         }
     }
     #endregion
