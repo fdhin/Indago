@@ -1,7 +1,7 @@
 @{
     # Module identity
     RootModule           = 'Indago.psm1'
-    ModuleVersion        = '0.1.5'
+    ModuleVersion        = '0.5.0'
     GUID                 = 'b0269411-6c65-49f9-b9f9-4195117af5e7'
     Author               = 'Frantz Dhin'
     CompanyName          = 'ENVO IT A/S'
@@ -97,9 +97,9 @@ Key features:
 
             # Release notes (shown on PSGallery version page)
             ReleaseNotes             = @'
-## v0.1.5 (2026-04-04)
+## v0.5.0 (2026-04-05)
 
-Initial release.
+Complete Tier 5 diagnostic suite -- 30 scriptlets across 5 categories.
 
 ### Commands
 - Invoke-Indago: Run pre-built troubleshooting/repair scriptlets by name
@@ -107,20 +107,54 @@ Initial release.
 - Get-IndagoHelp: Detailed help for each scriptlet with usage examples
 - Get-LoggedOnUser: Show the currently logged-on interactive user
 
-### Built-in Scriptlets
-- WU001 WUQuickHealth: Windows Update triage -- services, disk, reboots, failure history with HRESULT translation
-- DEF001 DEFStatusTriage: Security Center AV decoding, Defender mode, RTP, definitions, MDE sensor, signal gap analysis
-- APP001 WingetUpgradeSystemSilent: Silent machine-wide application updates via winget
-- APP002 WingetUpgradeUserApps: User-scoped application updates via winget (runs as logged-on user)
-- INT001 IntuneForceComplianceCheck: Force Intune compliance evaluation
-- BL001 BLStatusSnapshot: BitLocker volume status, ghost-state detection, event analysis, BDESVC health
-- FW001 FWStatusTriage: Firewall profiles, Security Center cross-reference, ghost detection, MpsSvc health
+### Windows Update Suite (7 scriptlets)
+- WU001 WUQuickHealth: Service health, disk space, reboot state, failure history with HRESULT translation
+- WU002 WUComponentHealth: CBS store corruption, DISM health, pending.xml, SessionsPending backlog
+- WU003 WUNetworkCheck: WSUS/WUfB config, endpoint connectivity, proxy/PAC detection, metered connection
+- WU004 WUPendingUpdates: Pending update enumeration with KB cross-reference and stale detection
+- WU005 WUDriverConflict: Driver update isolation, WU driver policy, co-installer detection, rollback history
+- WU006 WUHistoryDump: Full update timeline with HRESULT translation, failure clustering, KB gap detection
+- WU007 WUEnvironmentAudit: Feature update eligibility, safeguard holds, edition/build/EOL, storage reserves
+
+### Defender Suite (7 scriptlets)
+- DEF001 DEFStatusTriage: Security Center AV decode, Defender mode, RTP, definitions, MDE sensor, signal gaps
+- DEF002 DEFExclusions: SYSTEM + user-context exclusion enumeration, ASR rule audit, risk scoring
+- DEF003 DEFThreatHistory: Threat detection timeline, quarantine inventory, remediation failure analysis
+- DEF004 DEFUpdatePipeline: Definition update channel diagnostics, MMPC connectivity, fallback chain
+- DEF005 DEFScanHealth: Scan execution history, resource impact, scheduled task validation, offline scan
+- DEF006 DEFPlatformVersion: Platform/engine/definition version audit, event log warnings, update services
+- DEF007 DEFEventAnalysis: Defender event log timeline from Operational log with 26-event taxonomy
+
+### BitLocker Suite (8 scriptlets)
+- BL001 BLStatusSnapshot: Volume status, ghost-state detection, BDESVC health
+- BL002 BLTpmHealth: TPM presence, spec version, firmware CVEs, lockout, provisioning readiness
+- BL003 BLHardwarePrereqs: UEFI/Secure Boot, GPT, system partition, Modern Standby, OEM quirks
+- BL004 BLIntunePolicy: Intune join state, CSP registry, IME log, MDM enrollment health
+- BL005 BLEscrowCheck: Escrow pipeline, AAD identity, escrow events, connectivity, protector status
+- BL006 BLPolicyConflict: GPO vs MDM conflict detection, cipher/TPM decode, orphaned GPO settings
+- BL007 BLEventAnalysis: Event log timeline, 16 tracked Event IDs, HRESULT translation map
+- BL008 BLReadinessCheck: Encryption readiness dry run with go/no-go verdict
+
+### Firewall Suite (4 scriptlets)
+- FW001 FWStatusTriage: Profile status, adapter correlation, Security Center cross-reference, MpsSvc
+- FW002 FWPolicyConflict: Local/GPO/MDM policy comparison, EnableFirewall=0, MDMWinsOverGP
+- FW003 FWThirdParty: Security Center enumeration, productState decode, 14-vendor remnant scan, WFP
+- FW004 FWRuleAudit: Allow-inbound rule analysis, any/any detection, port exposure, stale rules
+
+### General (4 scriptlets)
+- NET001-NET003: Network diagnostics (adapter, DNS, connectivity)
+- PRF001: System profile overview
+- APP001-APP002: Winget patching (system + user scope)
+- INT001: Intune compliance force check
 
 ### Engine
 - User-context execution via Win32 CreateProcessAsUser (based on RunAsUser)
 - No passwords, no Task Scheduler artifacts, invisible to the logged-on user
 - RMM job breakaway support (CREATE_BREAKAWAY_FROM_JOB)
 - Automatic JSON output deserialization for user-context tasks
+
+### Previous
+- v0.1.5 (2026-04-04): Initial release with 7 scriptlets
 '@
 
             # Minimum PowerShell Gallery module requirements
