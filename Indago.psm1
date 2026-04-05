@@ -125,7 +125,7 @@ namespace RunAsUser
             out SafeNativeHandle DuplicateTokenHandle);
         [DllImport("kernel32")]
         public static extern IntPtr GetCurrentProcess();
-        // Bug #4 fix: SafeHandle overload for actual data retrieval
+        // SafeHandle overload for actual data retrieval
         [DllImport("advapi32.dll", SetLastError = true)]
         public static extern bool GetTokenInformation(
             SafeHandle TokenHandle,
@@ -133,7 +133,7 @@ namespace RunAsUser
             SafeMemoryBuffer TokenInformation,
             int TokenInformationLength,
             out int ReturnLength);
-        // Bug #4 fix: IntPtr overload for buffer-size query (avoids SafeHandle invalid-zero crash)
+        // IntPtr overload for buffer-size query (avoids SafeHandle invalid-zero crash)
         [DllImport("advapi32.dll", EntryPoint = "GetTokenInformation", SetLastError = true)]
         public static extern bool GetTokenInformationRaw(
             SafeHandle TokenHandle,
@@ -552,7 +552,7 @@ namespace RunAsUser
                 return new SafeNativeHandle(Marshal.ReadIntPtr(tokenInfo.DangerousGetHandle()));
             }
         }
-        // Bug #4 fix: use IntPtr.Zero directly for buffer-size probe instead of
+        // Use IntPtr.Zero directly for buffer-size probe instead of
         // new SafeMemoryBuffer(IntPtr.Zero) which throws ArgumentException
         private static SafeMemoryBuffer GetTokenInformation(SafeHandle hToken, uint infoClass)
         {
