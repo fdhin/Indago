@@ -641,7 +641,6 @@ if (Test-Path -Path $publicPath) {
 #endregion
 
 #region Load Scriptlet Catalog on Import
-# Bug #10 fix: use the validation function instead of raw ConvertFrom-Json
 $script:IndagoState.ScriptletCatalog = Import-ScriptletCatalog
 if (@($script:IndagoState.ScriptletCatalog).Count -gt 0) {
     Write-Verbose "Indago: Loaded $(@($script:IndagoState.ScriptletCatalog).Count) validated scriptlets from catalog."
