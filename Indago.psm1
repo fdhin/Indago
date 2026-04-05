@@ -452,7 +452,8 @@ namespace RunAsUser
                                             sb.Append(chars, 0, charCount);
                                         }
                                     }
-                                    catch { /* pipe broken = expected on timeout kill */ }
+                                    catch (System.IO.IOException) { /* pipe broken = expected on timeout kill */ }
+                                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine("Indago pipe read error: " + ex.Message); }
                                     finally { readDone.Set(); }
                                 });
 
