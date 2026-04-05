@@ -48,7 +48,8 @@ C:\ProgramData\Indago\
 ├── Public\
 ├── Private\
 ├── Scriptlets\
-│   └── ScriptletCatalog.json
+│   ├── ScriptletCatalog.json    # Metadata index
+│   └── *.ps1                    # Script files
 └── Tests\
 ```
 
@@ -152,7 +153,7 @@ Get-LoggedOnUser
 
 ## Scriptlet Catalog
 
-Scriptlets are pre-built PowerShell tasks stored in `Scriptlets/ScriptletCatalog.json`. Each scriptlet is a JSON object with its script text, parameters, execution context, and metadata.
+Scriptlets are pre-built PowerShell tasks. The metadata catalog lives in `Scriptlets/ScriptletCatalog.json` and script bodies are stored as standalone `.ps1` files in the same directory.
 
 ### Current Scriptlets
 
@@ -201,39 +202,40 @@ Each scriptlet specifies where it runs:
 
 ### Adding New Scriptlets
 
-Add entries to `Scriptlets/ScriptletCatalog.json`. The module validates the catalog on import — invalid entries are warned and skipped, never crash the module.
+1. Create `Scriptlets\{Id}_{Name}.ps1` with the script body (PS 5.1 syntax only).
+2. Add a metadata entry to `Scriptlets/ScriptletCatalog.json` with `ScriptFile` pointing to the file.
+3. Add the `.ps1` file path to the `FileList` in `Indago.psd1`.
+4. Run `Tests\Invoke-SelfTest.ps1` to validate.
 
-**Required fields:**
+**Required catalog fields:**
 
 | Field | Type | Description |
 |---|---|---|
 | `Id` | string | Unique identifier (e.g. `WU001`, `DEF002`) |
-| `Name` | string | Command name, alphanumeric only, no spaces (e.g. `DiagnoseWindowsUpdate`) |
+| `Name` | string | Command name, alphanumeric only, no spaces (e.g. `WUQuickHealth`) |
 | `DisplayName` | string | Human-readable title |
 | `Category` | string | Grouping for `Get-IndagoList -Category` filter |
 | `Description` | string | What this scriptlet does |
 | `ExecutionContext` | string | `System`, `User`, or `Auto` |
-| `Parameters` | object | Map of `Param1`–`Param5` definitions (can be empty `{}`) |
-| `Script` | string | The PowerShell script text (embedded as a string) |
+| `Parameters` | object | Map of `Param1`--`Param5` definitions (can be empty `{}`) |
+| `ScriptFile` | string | Filename of the `.ps1` script in `Scriptlets\` |
 | `Version` | string | Scriptlet version |
 
 **Optional fields:** `Tags` (string array), `Notes` (string).
 
-**Parameter definition format:**
+**Example:**
 
-```json
-"Parameters": {
-  "Param1": {
-    "Name": "DaysBack",
-    "Description": "How many days of history to check",
-    "Required": false,
-    "Default": "30"
-  }
-}
+`Scriptlets/NET001_FlushDns.ps1`:
+```powershell
+# NET001_FlushDns.ps1
+# Scriptlet: NET001 - Flush DNS Cache
+# Context: System | Version: 1.0
+
+Clear-DnsClientCache
+Write-Output 'DNS cache flushed successfully.'
 ```
 
-**Example scriptlet:**
-
+`ScriptletCatalog.json` entry:
 ```json
 {
   "Id": "NET001",
@@ -243,10 +245,9 @@ Add entries to `Scriptlets/ScriptletCatalog.json`. The module validates the cata
   "Description": "Clears the DNS resolver cache.",
   "ExecutionContext": "System",
   "Parameters": {},
-  "Script": "Clear-DnsClientCache\nWrite-Output 'DNS cache flushed successfully.'",
+  "ScriptFile": "NET001_FlushDns.ps1",
   "Tags": ["dns", "network"],
-  "Version": "1.0",
-  "Notes": "Requires no parameters."
+  "Version": "1.0"
 }
 ```
 
@@ -306,10 +307,13 @@ Indago/
 │   └── Import-ScriptletCatalog.ps1 # JSON loader with schema validation
 │
 ├── Scriptlets/
-│   └── ScriptletCatalog.json      # All pre-built tasks (single source of truth)
+│   ├── ScriptletCatalog.json      # Metadata index (no script bodies)
+│   ├── WU001_WUQuickHealth.ps1    # Individual script files
+│   ├── WU002_WUPolicyAudit.ps1
+│   └── ...                        # 30 files total
 │
 └── Tests/
-    └── Invoke-SelfTest.ps1        # Schema + structure validation
+    └── Invoke-SelfTest.ps1        # Schema + structure + file validation
 ```
 
 ### Module State
@@ -359,7 +363,7 @@ This verifies:
 - All expected files exist
 - `ScriptletCatalog.json` parses as valid JSON
 - Every scriptlet has all required fields
-- Every script body parses without syntax errors
+- Every script `.ps1` file exists and parses without syntax errors
 - No duplicate IDs or Names
 - Module manifest is valid
 

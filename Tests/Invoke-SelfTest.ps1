@@ -102,7 +102,7 @@ if ($jsonValid -and $null -ne $catalog) {
     $catalogArray = @($catalog)
     Test-Assert "Catalog has entries (found $($catalogArray.Count))" ($catalogArray.Count -gt 0)
 
-    $requiredFields = @('Id', 'Name', 'DisplayName', 'Category', 'Description', 'ExecutionContext', 'Script', 'Version')
+    $requiredFields = @('Id', 'Name', 'DisplayName', 'Category', 'Description', 'ExecutionContext', 'ScriptFile', 'Version')
     $validContexts = @('System', 'User', 'Auto')
 
     foreach ($entry in $catalogArray) {
@@ -123,21 +123,32 @@ if ($jsonValid -and $null -ne $catalog) {
         Test-Assert "[$entryId] Name is alphanumeric ($($entry.Name))" `
             ($entry.Name -match '^[A-Za-z0-9]+$')
 
+        # ScriptFile exists
+        $scriptPath = Join-Path $moduleRoot "Scriptlets\$($entry.ScriptFile)"
+        Test-Assert "[$entryId] ScriptFile exists ($($entry.ScriptFile))" `
+            (Test-Path $scriptPath)
+
         # Script parses without syntax errors
         $scriptParses = $false
-        try {
-            $null = [scriptblock]::Create($entry.Script)
-            $scriptParses = $true
-        }
-        catch {
-            # Will be caught below
+        if (Test-Path $scriptPath) {
+            try {
+                $content = Get-Content -Path $scriptPath -Raw -ErrorAction Stop
+                $null = [scriptblock]::Create($content)
+                $scriptParses = $true
+            }
+            catch {
+                # Will be caught below
+            }
         }
         Test-Assert "[$entryId] Script parses without syntax errors" $scriptParses
 
         # Script is not just a stub
-        Test-Assert "[$entryId] Script is implemented (not a stub)" `
-            ($entry.Script.Length -gt 100) `
-            'Script appears to be a stub placeholder.'
+        if (Test-Path $scriptPath) {
+            $fileSize = (Get-Item $scriptPath).Length
+            Test-Assert "[$entryId] Script is implemented (not a stub)" `
+                ($fileSize -gt 100) `
+                'Script file appears to be a stub placeholder.'
+        }
 
         # Parameters object exists (can be empty)
         Test-Assert "[$entryId] Has Parameters field" `

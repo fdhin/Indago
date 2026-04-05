@@ -1,7 +1,7 @@
 @{
     # Module identity
     RootModule           = 'Indago.psm1'
-    ModuleVersion        = '0.5.0'
+    ModuleVersion        = '0.6.0'
     GUID                 = 'b0269411-6c65-49f9-b9f9-4195117af5e7'
     Author               = 'Frantz Dhin'
     CompanyName          = 'ENVO IT A/S'
@@ -59,7 +59,40 @@ Key features:
         'Private\Write-WinLog.ps1',
         'Private\Import-ScriptletCatalog.ps1',
         'Scriptlets\ScriptletCatalog.json',
-        'Tests\Invoke-SelfTest.ps1'
+        'Scriptlets\APP001_WingetUpgradeSystemSilent.ps1',
+        'Scriptlets\APP002_WingetUpgradeUserApps.ps1',
+        'Scriptlets\BL001_BLStatusSnapshot.ps1',
+        'Scriptlets\BL002_BLTpmHealth.ps1',
+        'Scriptlets\BL003_BLHardwarePrereqs.ps1',
+        'Scriptlets\BL004_BLIntunePolicy.ps1',
+        'Scriptlets\BL005_BLEscrowCheck.ps1',
+        'Scriptlets\BL006_BLPolicyConflict.ps1',
+        'Scriptlets\BL007_BLEventAnalysis.ps1',
+        'Scriptlets\BL008_BLReadinessCheck.ps1',
+        'Scriptlets\DEF001_DEFStatusTriage.ps1',
+        'Scriptlets\DEF002_DEFDefinitionHealth.ps1',
+        'Scriptlets\DEF003_DEFThirdPartyAV.ps1',
+        'Scriptlets\DEF004_DEFRealtimeProtection.ps1',
+        'Scriptlets\DEF005_DEFPolicyConflict.ps1',
+        'Scriptlets\DEF006_DEFPlatformVersion.ps1',
+        'Scriptlets\DEF007_DEFEventAnalysis.ps1',
+        'Scriptlets\FW001_FWStatusTriage.ps1',
+        'Scriptlets\FW002_FWPolicyConflict.ps1',
+        'Scriptlets\FW003_FWThirdParty.ps1',
+        'Scriptlets\FW004_FWServiceHealth.ps1',
+        'Scriptlets\FW005_FWRuleDiagnostic.ps1',
+        'Scriptlets\INT001_IntuneForceComplianceCheck.ps1',
+        'Scriptlets\WU001_WUQuickHealth.ps1',
+        'Scriptlets\WU002_WUPolicyAudit.ps1',
+        'Scriptlets\WU003_WUNetworkCheck.ps1',
+        'Scriptlets\WU004_WUTlsCertCheck.ps1',
+        'Scriptlets\WU005_WUComponentHealth.ps1',
+        'Scriptlets\WU006_WUEventTimeline.ps1',
+        'Scriptlets\WU007_WUEnvironmentAudit.ps1',
+        'Tests\Invoke-SelfTest.ps1',
+        'Tests\Test-InvokeAsUser.ps1',
+        'Tests\Test-InvokeIndago.ps1',
+        'Tests\Test-WriteWinLog.ps1'
     )
 
     # PSGallery metadata

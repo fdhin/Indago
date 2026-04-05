@@ -122,7 +122,11 @@ function Invoke-Indago {
     #endregion
 
     #region Build the script with parameter injection
-    $scriptText = $task.Script
+    $scriptText = $task._ScriptContent
+    if ([string]::IsNullOrWhiteSpace($scriptText)) {
+        Write-Error "Invoke-Indago: Script content not loaded for '$Name'. The ScriptFile may be missing or invalid."
+        return
+    }
 
     # Resolve Param1-Param5
     $resolvedParams = @{

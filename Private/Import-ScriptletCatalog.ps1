@@ -24,6 +24,9 @@ function Import-ScriptletCatalog {
         $Path = Join-Path -Path $script:IndagoState.ModuleRoot -ChildPath 'Scriptlets\ScriptletCatalog.json'
     }
 
+    # Derive the Scriptlets directory from the catalog path
+    $scriptletsDir = Split-Path -Path $Path -Parent
+
     if (-not (Test-Path -Path $Path)) {
         Write-Warning "Import-ScriptletCatalog: Catalog not found at: $Path"
         return @()
@@ -39,7 +42,7 @@ function Import-ScriptletCatalog {
     }
 
     # Required fields for schema validation
-    $requiredFields = @('Id', 'Name', 'DisplayName', 'Category', 'Description', 'ExecutionContext', 'Script', 'Version')
+    $requiredFields = @('Id', 'Name', 'DisplayName', 'Category', 'Description', 'ExecutionContext', 'ScriptFile', 'Version')
     $validContexts = @('System', 'User', 'Auto')
 
     $validatedCatalog = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -66,14 +69,23 @@ function Import-ScriptletCatalog {
         }
         #endregion
 
-        #region Validate Script parses
-        if (-not [string]::IsNullOrWhiteSpace($entry.Script)) {
-            try {
-                $null = [scriptblock]::Create($entry.Script)
-            }
-            catch {
-                Write-Warning "Import-ScriptletCatalog: Scriptlet $entryId has a script syntax error: $($_.Exception.Message)"
+        #region Validate ScriptFile exists and parses
+        if (-not [string]::IsNullOrWhiteSpace($entry.ScriptFile)) {
+            $scriptPath = Join-Path -Path $scriptletsDir -ChildPath $entry.ScriptFile
+            if (-not (Test-Path -Path $scriptPath)) {
+                Write-Warning "Import-ScriptletCatalog: Scriptlet $entryId ScriptFile not found: $scriptPath"
                 $isValid = $false
+            }
+            else {
+                try {
+                    $scriptContent = Get-Content -Path $scriptPath -Raw -ErrorAction Stop
+                    $null = [scriptblock]::Create($scriptContent)
+                }
+                catch {
+                    Write-Warning "Import-ScriptletCatalog: Scriptlet $entryId script has syntax error: $($_.Exception.Message)"
+                    $isValid = $false
+                    $scriptContent = $null
+                }
             }
         }
         #endregion
@@ -86,6 +98,10 @@ function Import-ScriptletCatalog {
         #endregion
 
         if ($isValid) {
+            # Attach loaded script content so Invoke-Indago does not re-read the file
+            if ($scriptContent) {
+                $null = Add-Member -InputObject $entry -MemberType NoteProperty -Name '_ScriptContent' -Value $scriptContent -Force
+            }
             $validatedCatalog.Add($entry)
         }
         else {
