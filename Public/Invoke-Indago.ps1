@@ -151,6 +151,8 @@ function Invoke-Indago {
             }
         }
     }
+
+    Write-Verbose "Invoke-Indago: Parameters resolved, context: $execContext"
     #endregion
 
     #region Execute
@@ -160,7 +162,8 @@ function Invoke-Indago {
             Write-Verbose 'Invoke-Indago: Executing in System context (direct).'
 
             # Use param block and arguments for safe execution without injection risk
-            $systemScript = "param(`$Param1, `$Param2, `$Param3, `$Param4, `$Param5)`n$scriptText"
+            $paramPreamble = 'param($Param1, $Param2, $Param3, $Param4, $Param5)' + "`n"
+            $systemScript = $paramPreamble + $scriptText
             $sb = [scriptblock]::Create($systemScript)
             $result = & $sb -Param1 $resolvedParams['Param1'] -Param2 $resolvedParams['Param2'] -Param3 $resolvedParams['Param3'] -Param4 $resolvedParams['Param4'] -Param5 $resolvedParams['Param5']
 
