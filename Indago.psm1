@@ -445,7 +445,16 @@ namespace RunAsUser
                                         {
                                             bool bSuccess = NativeMethods.ReadFile(pipeHandle, buf, BUFSIZE, ref dwRead, IntPtr.Zero);
                                             if (!bSuccess || dwRead == 0)
+                                            {
+                                                int flushCount = decoder.GetCharCount(new byte[0], 0, 0, true);
+                                                if (flushCount > 0)
+                                                {
+                                                    char[] flushChars = new char[flushCount];
+                                                    decoder.GetChars(new byte[0], 0, 0, flushChars, 0, true);
+                                                    sb.Append(flushChars, 0, flushCount);
+                                                }
                                                 break;
+                                            }
                                             int charCount = decoder.GetCharCount(buf, 0, dwRead);
                                             char[] chars = new char[charCount];
                                             decoder.GetChars(buf, 0, dwRead, chars, 0);
