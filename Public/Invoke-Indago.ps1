@@ -124,9 +124,8 @@ function Invoke-Indago {
     #region Build the script with parameter injection
     $scriptText = $task.Script
 
-    # Inject Param1-Param5 as variables at the top of the script
-    $paramBlock = [System.Collections.Generic.List[string]]::new()
-    $boundParams = @{
+    # Resolve Param1-Param5
+    $resolvedParams = @{
         'Param1' = $Param1
         'Param2' = $Param2
         'Param3' = $Param3
@@ -134,33 +133,24 @@ function Invoke-Indago {
         'Param5' = $Param5
     }
 
-    foreach ($key in $boundParams.Keys) {
-        $value = $boundParams[$key]
-        if (-not [string]::IsNullOrWhiteSpace($value)) {
-            # Escape single quotes in value for safe injection
-            $escapedValue = $value -replace "'", "''"
-            $paramBlock.Add("`$$key = '$escapedValue'")
-        }
-        else {
+    foreach ($key in @('Param1', 'Param2', 'Param3', 'Param4', 'Param5')) {
+        $value = $resolvedParams[$key]
+        if ([string]::IsNullOrWhiteSpace($value)) {
             # Apply defaults from the scriptlet definition if available
             if ($null -ne $task.Parameters -and $null -ne $task.Parameters.$key) {
                 $defaultVal = $task.Parameters.$key.Default
                 if (-not [string]::IsNullOrWhiteSpace($defaultVal)) {
-                    $escapedDefault = $defaultVal -replace "'", "''"
-                    $paramBlock.Add("`$$key = '$escapedDefault'")
+                    $resolvedParams[$key] = $defaultVal
                 }
                 else {
-                    $paramBlock.Add("`$$key = `$null")
+                    $resolvedParams[$key] = $null
                 }
             }
             else {
-                $paramBlock.Add("`$$key = `$null")
+                $resolvedParams[$key] = $null
             }
         }
     }
-
-    $fullScript = ($paramBlock -join "`n") + "`n" + $scriptText
-    Write-Verbose "Invoke-Indago: Script prepared ($($fullScript.Length) chars), context: $execContext"
     #endregion
 
     #region Execute
@@ -168,8 +158,12 @@ function Invoke-Indago {
         if ($execContext -eq 'System') {
             # Direct execution in current SYSTEM session — native PowerShell objects
             Write-Verbose 'Invoke-Indago: Executing in System context (direct).'
-            $sb = [scriptblock]::Create($fullScript)
-            $result = & $sb
+
+            # Use param block and arguments for safe execution without injection risk
+            $systemScript = "param(`$Param1, `$Param2, `$Param3, `$Param4, `$Param5)`n$scriptText"
+            $sb = [scriptblock]::Create($systemScript)
+            $result = & $sb -Param1 $resolvedParams['Param1'] -Param2 $resolvedParams['Param2'] -Param3 $resolvedParams['Param3'] -Param4 $resolvedParams['Param4'] -Param5 $resolvedParams['Param5']
+
             $stopwatch.Stop()
 
             Write-WinLog -TaskName $Name -ExecutionContext 'System' -Status 'Success' `
@@ -181,7 +175,22 @@ function Invoke-Indago {
             # User-context execution via CreateProcessAsUser — text output
             Write-Verbose 'Invoke-Indago: Executing in User context (CreateProcessAsUser).'
 
-            $output = Invoke-AsUser -ScriptText $fullScript
+            # Inject parameters securely via Base64 encoding since we must pass a string over the process boundary
+            $paramBlock = [System.Collections.Generic.List[string]]::new()
+            foreach ($key in @('Param1', 'Param2', 'Param3', 'Param4', 'Param5')) {
+                $val = $resolvedParams[$key]
+                if ($null -ne $val) {
+                    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($val))
+                    $paramBlock.Add("`$$key = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encoded'))")
+                }
+                else {
+                    $paramBlock.Add("`$$key = `$null")
+                }
+            }
+
+            $userScript = ($paramBlock -join "`n") + "`n" + $scriptText
+
+            $output = Invoke-AsUser -ScriptText $userScript
             $stopwatch.Stop()
 
             Write-WinLog -TaskName $Name -ExecutionContext 'User' -Status 'Success' `
