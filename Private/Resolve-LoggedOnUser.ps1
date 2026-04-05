@@ -14,7 +14,7 @@ function Resolve-LoggedOnUser {
     [OutputType([PSCustomObject])]
     param()
 
-    # Bug #11 fix: always query the live session. Caching is dangerous in
+    # Bug #11 addressed: always query the live session. Caching is dangerous in
     # persistent RMM agents — if user A logs off and user B logs on, the
     # cache would forever return user A's identity.
 
