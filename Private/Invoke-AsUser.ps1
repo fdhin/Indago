@@ -109,17 +109,12 @@ function Invoke-AsUserCacheToDisk {
         Set-Content -Path $tempFile -Value $ScriptText -Encoding UTF8 -Force -ErrorAction Stop
 
         # Grant user read+execute on the temp file
-        try {
-            $acl = Get-Acl -Path $tempFile -ErrorAction Stop
-            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                $LoggedOnUser.FullName, 'ReadAndExecute', 'Allow'
-            )
-            $acl.AddAccessRule($rule)
-            Set-Acl -Path $tempFile -AclObject $acl -ErrorAction Stop
-        }
-        catch {
-            Write-Warning "Invoke-AsUserCacheToDisk: Could not set ACL on temp file: $($_.Exception.Message)"
-        }
+        $acl = Get-Acl -Path $tempFile -ErrorAction Stop
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $LoggedOnUser.FullName, 'ReadAndExecute', 'Allow'
+        )
+        $acl.AddAccessRule($rule)
+        Set-Acl -Path $tempFile -AclObject $acl -ErrorAction Stop
 
         $pwshPath = "$env:SystemRoot\system32\WindowsPowerShell\v1.0\powershell.exe"
         $pwshArgs = "-ExecutionPolicy Bypass -WindowStyle Hidden -NonInteractive -File `"$tempFile`""
