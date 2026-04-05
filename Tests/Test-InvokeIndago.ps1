@@ -85,13 +85,12 @@ $testResult = & (Get-Module Indago) {
         }
 
         # Test 3: Missing required parameter
+        # Use -ErrorAction Stop so Write-Error becomes terminating and is caught
+        # by the catch block. -ErrorVariable is unreliable across module scope
+        # boundaries in PS 5.1.
         $results.MissingParamHasError = $false
         try {
-            $errs = @()
-            Invoke-Indago -Name 'TestRequiredParams' -ErrorVariable errs -ErrorAction SilentlyContinue
-            if ($errs.Count -gt 0 -and $errs[0].Exception.Message -match 'requires -Param1') {
-                $results.MissingParamHasError = $true
-            }
+            Invoke-Indago -Name 'TestRequiredParams' -ErrorAction Stop
         } catch {
             if ($_.Exception.Message -match 'requires -Param1') {
                 $results.MissingParamHasError = $true
