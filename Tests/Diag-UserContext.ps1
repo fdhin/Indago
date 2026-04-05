@@ -108,7 +108,7 @@ try {
         Write-Output "HELLO_FROM_USER"
     } | Out-String
     [System.IO.File]::WriteAllText('$outputFile', `$result, [System.Text.Encoding]::UTF8)
-} catch {
+} catch [System.Exception] {
     [System.IO.File]::WriteAllText('$outputFile', "ERROR: `$(`$_.Exception.Message)", [System.Text.Encoding]::UTF8)
 }
 "@
