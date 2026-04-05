@@ -61,7 +61,32 @@ function Write-WinLog {
         # Tab-delimited log line for easy parsing
         $logEntry = "$timestamp`t$TaskName`t$ExecutionContext`t$userName`t$Status`t${DurationMs}ms`t$Message"
 
-        Add-Content -Path $logFile -Value $logEntry -Encoding UTF8 -ErrorAction Stop
+        $retryCount = 0
+        $maxRetries = 3
+        $written = $false
+
+        while (-not $written -and $retryCount -lt $maxRetries) {
+            $fs = $null
+            $sw = $null
+            try {
+                $fs = [System.IO.File]::Open($logFile, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+                $sw = [System.IO.StreamWriter]::new($fs, [System.Text.Encoding]::UTF8)
+                $sw.WriteLine($logEntry)
+                $written = $true
+            }
+            catch {
+                $retryCount++
+                if ($retryCount -eq $maxRetries) {
+                    throw
+                }
+                Start-Sleep -Milliseconds 50
+            }
+            finally {
+                if ($null -ne $sw) { $sw.Dispose() }
+                if ($null -ne $fs) { $fs.Dispose() }
+            }
+        }
+
         Write-Verbose "Write-WinLog: Logged $Status for $TaskName"
     }
     catch {
