@@ -27,7 +27,7 @@ function Get-IndagoList {
 
     # Apply category filter if provided
     if (-not [string]::IsNullOrWhiteSpace($Category)) {
-        $catalog = @($catalog | Where-Object { $_.Category -eq $Category })
+        $catalog = $catalog.Where({ $_.Category -eq $Category })
         if ($catalog.Count -eq 0) {
             Write-Warning "No scriptlets found in category: $Category"
 
