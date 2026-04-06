@@ -283,6 +283,73 @@ if (-not $sysPartFound) {
 Write-Output ''
 
 # ---------------------------------------------------------------
+# Check 4b: Recovery Partition (WinRE) Size & Free Space
+# WinRE lives on a dedicated Recovery Partition, not the ESP.
+# If the recovery partition has < 250MB free, WinRE security updates
+# fail (KB5034441 / CVE-2024-20666 patch), WinRE disables itself,
+# and BitLocker silent encryption halts with Event 854.
+# ---------------------------------------------------------------
+Write-Output '--- Recovery Partition (WinRE) ---'
+
+$recPartFound = $false
+if ($null -ne $osDiskNumber) {
+    try {
+        # Recovery partition GPT GUID: de94bba4-06d1-4d40-a16a-bfd50179d6ac
+        $recParts = @(Get-Partition -DiskNumber $osDiskNumber -ErrorAction Stop | Where-Object {
+            $_.GptType -eq '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}' -or $_.Type -eq 'Recovery'
+        })
+
+        if ($recParts.Count -gt 0) {
+            $recPartFound = $true
+            # Take the last recovery partition (typically at the end of the disk)
+            $recPart = $recParts[$recParts.Count - 1]
+            $recSizeMB = [math]::Round($recPart.Size / 1MB, 0)
+
+            # Try to read volume free space (may fail if partition is hidden/locked)
+            $volInfo = $null
+            try { $volInfo = Get-Volume -Partition $recPart -ErrorAction Stop } catch { }
+
+            if ($null -ne $volInfo -and $null -ne $volInfo.SizeRemaining) {
+                $freeMB = [math]::Round($volInfo.SizeRemaining / 1MB, 0)
+                Write-Output "[i]   Recovery Partition Found: Size $recSizeMB MB (Free: $freeMB MB)"
+
+                if ($freeMB -lt 250) {
+                    Write-Output '[!!]  WinRE Partition Exhaustion Risk (CVE-2024-20666)'
+                    Write-Output "       Less than 250 MB of free space available ($freeMB MB)."
+                    Write-Output '       Windows Security Updates for WinRE (e.g. KB5034441) will fail.'
+                    Write-Output '       A failed WinRE update disables WinRE, which permanently blocks'
+                    Write-Output '       BitLocker silent encryption (Event 854).'
+                    Write-Output '       Remediation: resize the recovery partition or use the Microsoft'
+                    Write-Output '       Safe OS Dynamic Update (SODU) tool to extend it.'
+                    $issueCount++
+                }
+                else {
+                    Write-Output '[OK]  Recovery Partition has sufficient free space for WinRE updates.'
+                }
+            }
+            else {
+                Write-Output "[i]   Recovery Partition Found: Size $recSizeMB MB"
+                Write-Output '       Could not calculate free space (expected if partition is hidden/locked).'
+                if ($recSizeMB -lt 500) {
+                    Write-Output '[!]   Partition is below 500 MB. WinRE updates may fail.'
+                    Write-Output '       Monitor for Event 854 and WinRE disabled state.'
+                    $warnCount++
+                }
+            }
+        }
+    } catch { }
+}
+
+if (-not $recPartFound) {
+    Write-Output '[!]   No dedicated Recovery Partition found.'
+    Write-Output '       WinRE might be residing on the OS partition (C:\Recovery).'
+    Write-Output '       This is non-standard but BitLocker may still function.'
+    $warnCount++
+}
+
+Write-Output ''
+
+# ---------------------------------------------------------------
 # Check 5: Modern Standby / InstantGo
 # ---------------------------------------------------------------
 Write-Output '--- Modern Standby ---'
@@ -427,6 +494,136 @@ if ($mfgStr -match 'VMware') {
     Write-Output '[i]   Virtual Machine Detected'
     Write-Output '       Running on VMware. BitLocker works if virtual TPM is enabled.'
     Write-Output '       No OEM-specific hardware quirks apply.'
+}
+
+Write-Output ''
+
+# ---------------------------------------------------------------
+# Check 7: DMA Bus Security (Un-Allowed DMA Bus Detection)
+# On pre-24H2 builds, un-allowed DMA-capable buses silently block
+# automatic/silent BitLocker encryption. This is one of the most
+# common causes of "everything looks healthy but it won't encrypt."
+# Ref: Microsoft Learn - BitLocker OEM requirements (ref 27);
+#      HKLM\SYSTEM\CurrentControlSet\Control\DmaSecurity\AllowedBuses
+# ---------------------------------------------------------------
+Write-Output '--- DMA Bus Security ---'
+
+$osBuildDMA = 0
+try {
+    $ntVer = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+    $osBuildDMA = [int]$ntVer.CurrentBuildNumber
+} catch { }
+
+# Windows 11 24H2 = build 26100: DMA bus check officially deprecated as a
+# prerequisite for automatic device encryption.
+if ($osBuildDMA -ge 26100) {
+    Write-Output "[OK]  DMA Bus Security (OS build $osBuildDMA)"
+    Write-Output '       Windows 11 24H2 or later. The DMA bus prerequisite for automatic device'
+    Write-Output '       encryption has been officially removed. No DMA bus blocking possible.'
+} else {
+    $dmaSecPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\DmaSecurity'
+    $allowedPath = "$dmaSecPath\AllowedBuses"
+
+    if (-not (Test-Path $dmaSecPath)) {
+        Write-Output "[i]   DMA Bus Security (OS build $osBuildDMA)"
+        Write-Output '       DmaSecurity registry path not present. Kernel DMA Protection may not be'
+        Write-Output '       enabled on this hardware. This is not a blocker unless the OS decides to'
+        Write-Output '       enforce DMA checks at encryption time.'
+    }
+    elseif (Test-Path $allowedPath) {
+        $busEntries = [System.Collections.Generic.List[string]]::new()
+        try {
+            $busProps = Get-ItemProperty -Path $allowedPath -ErrorAction Stop
+            if ($busProps) {
+                foreach ($prop in $busProps.PSObject.Properties) {
+                    # AllowedBuses entries have PCI device IDs as value names
+                    if ($prop.Name -notmatch '^PS') {
+                        $null = $busEntries.Add($prop.Name)
+                    }
+                }
+            }
+        } catch { }
+
+        if ($busEntries.Count -gt 0) {
+            Write-Output "[i]   DMA Bus Security: $($busEntries.Count) whitelisted bus(es)"
+            Write-Output '       Kernel DMA Protection is active. The following internal buses are'
+            Write-Output '       explicitly allowed in the DMA security allowlist:'
+            $showMax = [math]::Min($busEntries.Count, 10)
+            for ($bi = 0; $bi -lt $showMax; $bi++) {
+                Write-Output "       - $($busEntries[$bi])"
+            }
+            if ($busEntries.Count -gt 10) {
+                Write-Output "       ... and $($busEntries.Count - 10) more"
+            }
+            Write-Output '       If silent encryption fails with no clear cause on this pre-24H2 build,'
+            Write-Output '       internal PCI bridges not on this list may be the blocker.'
+            Write-Output '       Run: msinfo32 > System Summary > Kernel DMA Protection to confirm state.'
+        }
+        else {
+            Write-Output "[i]   DMA Bus Security (OS build $osBuildDMA)"
+            Write-Output '       AllowedBuses key exists but is empty. If DMA protection is active,'
+            Write-Output '       ALL DMA-capable buses are treated as un-allowed -- this will block'
+            Write-Output '       silent encryption on any machine with PCIe bridges or Thunderbolt ports.'
+            Write-Output '       Run: msinfo32 > System Summary > Kernel DMA Protection to confirm.'
+            $warnCount++
+        }
+    }
+    else {
+        Write-Output "[i]   DMA Bus Security (OS build $osBuildDMA)"
+        Write-Output '       DmaSecurity path exists but AllowedBuses subkey not found.'
+        Write-Output '       DMA protection may not be actively enforcing bus restrictions.'
+    }
+}
+
+Write-Output ''
+
+# ---------------------------------------------------------------
+# Check 8: Virtualization-Based Security (VBS)
+# VBS is not a direct BitLocker prerequisite, but on pre-24H2 builds
+# HSTI compliance (which includes VBS) was required for auto-device-
+# encryption. Also underpins Kernel DMA Protection and HVCI.
+# ---------------------------------------------------------------
+Write-Output '--- Virtualization-Based Security (VBS) ---'
+
+try {
+    $dg = Get-CimInstance -Namespace 'ROOT\Microsoft\Windows\DeviceGuard' -ClassName Win32_DeviceGuard -ErrorAction Stop
+    if ($null -ne $dg) {
+        $vbsStatus = $dg.VirtualizationBasedSecurityStatus
+        $secProps  = $dg.AvailableSecurityProperties
+
+        $vbsMap = @{ 0 = 'Disabled'; 1 = 'Enabled but not running'; 2 = 'Running' }
+        $vbsStr = if ($vbsMap.ContainsKey([int]$vbsStatus)) { $vbsMap[[int]$vbsStatus] } else { "Unknown ($vbsStatus)" }
+
+        if ($vbsStatus -eq 2) {
+            Write-Output "[OK]  VBS Status: $vbsStr"
+
+            $props = [System.Collections.Generic.List[string]]::new()
+            if ($secProps -contains 1) { $null = $props.Add('Hypervisor Support') }
+            if ($secProps -contains 2) { $null = $props.Add('Secure Boot') }
+            if ($secProps -contains 3) { $null = $props.Add('DMA Protection') }
+            if ($props.Count -gt 0) {
+                Write-Output "       Available Hardware Security: $($props -join ', ')"
+            }
+        }
+        elseif ($vbsStatus -eq 1) {
+            Write-Output "[!]   VBS Status: $vbsStr"
+            Write-Output '       Virtualization features are enabled in OS but the hypervisor is not running.'
+            Write-Output '       Check BIOS for Intel VT-x / AMD-V / SVM enablement.'
+            Write-Output '       Not a BitLocker blocker, but required for Kernel DMA Protection and HVCI.'
+            $warnCount++
+        }
+        else {
+            Write-Output "[i]   VBS Status: $vbsStr"
+            Write-Output '       Virtualization-Based Security is disabled. BitLocker encryption itself'
+            Write-Output '       does not require VBS, but pre-24H2 auto-device-encryption relied on'
+            Write-Output '       HSTI attestation which includes VBS. Kernel DMA Protection also requires VBS.'
+        }
+    }
+    else {
+        Write-Output '[i]   VBS / DeviceGuard: WMI class returned no data.'
+    }
+} catch {
+    Write-Output '[i]   VBS / DeviceGuard: WMI class not available on this OS build.'
 }
 
 Write-Output ''

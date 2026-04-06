@@ -305,13 +305,13 @@ try {
         Write-Output '       No events found. Encryption may never have been attempted on this machine.'
     }
 } catch {
-    $errMsg = $_.Exception.Message
-    if ($errMsg -like '*No events were found*' -or $errMsg -like '*There is not an event log*') {
+    $fqeid = $_.FullyQualifiedErrorId
+    if ($fqeid -eq 'NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand' -or $fqeid -like '*EventLogNotFoundException*') {
         Write-Output '[i]   Last BitLocker Event'
         Write-Output '       No BitLocker management events found. Encryption may never have been attempted.'
     } else {
         Write-Output '[i]   Last BitLocker Event'
-        Write-Output "       Could not read BitLocker event log: $errMsg"
+        Write-Output "       Could not read BitLocker event log: $($_.Exception.Message)"
     }
 }
 

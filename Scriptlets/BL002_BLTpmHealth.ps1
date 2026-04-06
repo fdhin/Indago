@@ -26,83 +26,106 @@ try {
 } catch { }
 
 if (-not $tpmOK) {
-    # Fallback: tpmtool.exe getdeviceinformation
-    $tpmToolPath = Join-Path $env:WinDir 'System32\tpmtool.exe'
-    if (Test-Path $tpmToolPath) {
+    # Fallback: Win32_Tpm WMI class (language-independent, no text parsing)
+    $wmiTpmFb = $null
+    try {
+        $wmiTpmFb = Get-CimInstance -Namespace 'ROOT\CIMv2\Security\MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction Stop
+    } catch { }
+
+    if ($null -ne $wmiTpmFb) {
+        $usedFallback = $true
+        $fbPresent = $false
+        $fbVersion = ''
+        $fbVendor  = ''
+        $fbLocked  = $false
+        $fbInit    = $false
+
+        # Check if TPM is present via IsEnabled or IsActivated
+        $specVer = $wmiTpmFb.SpecVersion
+        if (-not [string]::IsNullOrWhiteSpace($specVer)) {
+            $fbPresent = $true
+            $fbVersion = ($specVer -split ',')[0].Trim()
+        }
+        # ManufacturerId is numeric, ManufacturerIdTxt may not be available in all WMI versions
+        $mfgIdRaw = $wmiTpmFb.ManufacturerId
+        if ($mfgIdRaw) { $fbVendor = "0x{0:X8}" -f $mfgIdRaw }
+
+        # Check enabled state
         try {
-            $tpmToolOutput = & $tpmToolPath getdeviceinformation 2>&1
-            $usedFallback = $true
-            if ($null -ne $tpmToolOutput) {
-                $tpmToolLines = @($tpmToolOutput | ForEach-Object { $_.ToString().Trim() })
-                $fbPresent = $false
-                $fbVersion = ''
-                $fbVendor  = ''
-                $fbLocked  = $false
-                $fbInit    = $false
-                foreach ($line in $tpmToolLines) {
-                    if ($line -match 'TPM Present\s*:\s*(.+)') {
-                        $fbPresent = ($Matches[1].Trim() -eq 'True')
-                    }
-                    if ($line -match 'TPM Version\s*:\s*(.+)') {
-                        $fbVersion = $Matches[1].Trim()
-                    }
-                    if ($line -match 'TPM Manufacturer ID\s*:\s*(.+)') {
-                        $fbVendor = $Matches[1].Trim()
-                    }
-                    if ($line -match 'Is Locked Out\s*:\s*(.+)') {
-                        $fbLocked = ($Matches[1].Trim() -eq 'True')
-                    }
-                    if ($line -match 'Is Initialized\s*:\s*(.+)') {
-                        $fbInit = ($Matches[1].Trim() -eq 'True')
-                    }
-                }
-                if ($fbPresent) {
-                    $tpmPresent = $true
-                    Write-Output '[i]   TPM Present (tpmtool.exe fallback)'
-                    Write-Output '       Get-Tpm cmdlet unavailable. Using tpmtool.exe for basic diagnostics.'
-                    Write-Output "       TPM Present: True. Version: $fbVersion. Manufacturer: $fbVendor."
-                    if ($fbInit) {
-                        Write-Output '       Initialized: True.'
-                    } else {
-                        Write-Output '[!!]  TPM Not Initialized'
-                        Write-Output '       The TPM has not been provisioned by the OS.'
-                        $issueCount++
-                    }
-                    if ($fbLocked) {
-                        Write-Output '[!!]  TPM Locked Out (tpmtool)'
-                        Write-Output '       The TPM is currently refusing authentication commands.'
-                        Write-Output '       Wait for the lockout to expire with the system powered on.'
-                        $issueCount++
-                    }
-                } else {
-                    Write-Output '[!!]  TPM Not Present'
-                    Write-Output '       tpmtool.exe reports no TPM hardware detected.'
-                    Write-Output '       Check BIOS/UEFI settings -- TPM may be disabled at the silicon level.'
-                    $issueCount++
-                }
-                # With fallback, we have limited data. Report what we can and skip deep checks.
-                Write-Output ''
-                Write-Output '[i]   Limited diagnostics available via tpmtool.exe fallback.'
-                Write-Output '       For full TPM health analysis, ensure the TrustedPlatformModule PowerShell module'
-                Write-Output '       is available. Run: Get-Module -ListAvailable TrustedPlatformModule'
+            $enabledResult = $wmiTpmFb | Invoke-CimMethod -MethodName 'IsEnabled' -ErrorAction Stop
+            if ($enabledResult -and $enabledResult.ReturnValue -eq 0) {
+                if ($enabledResult.IsEnabled) { $fbPresent = $true }
+            }
+        } catch { }
+
+        # Check initialization (ownership)
+        try {
+            $ownedResult = $wmiTpmFb | Invoke-CimMethod -MethodName 'IsOwned' -ErrorAction Stop
+            if ($ownedResult -and $ownedResult.ReturnValue -eq 0) {
+                $fbInit = $ownedResult.IsOwned
+            }
+        } catch { }
+
+        # Check lockout
+        try {
+            $lockResult = $wmiTpmFb | Invoke-CimMethod -MethodName 'IsLockedOut' -ErrorAction Stop
+            if ($lockResult -and $lockResult.ReturnValue -eq 0) {
+                $fbLocked = $lockResult.IsLockedOut
+            }
+        } catch { }
+
+        if ($fbPresent) {
+            $tpmPresent = $true
+            Write-Output '[i]   TPM Present (WMI fallback)'
+            Write-Output '       Get-Tpm cmdlet unavailable. Using Win32_Tpm WMI class for diagnostics.'
+            Write-Output "       TPM Present: True. Version: $fbVersion. ManufacturerId: $fbVendor."
+            if ($fbInit) {
+                Write-Output '       Owned: True.'
             } else {
-                Write-Output '[!!]  TPM Status Unavailable'
-                Write-Output '       Get-Tpm cmdlet failed and tpmtool.exe returned no data.'
-                Write-Output '       TPM infrastructure may be missing or corrupted.'
+                Write-Output '[!!]  TPM Not Owned/Initialized'
+                Write-Output '       The TPM has not been provisioned by the OS.'
                 $issueCount++
             }
-        } catch {
-            Write-Output '[!!]  TPM Status Unavailable'
-            Write-Output '       Get-Tpm cmdlet failed and tpmtool.exe also failed.'
-            Write-Output '       TPM infrastructure may be missing or corrupted.'
+            if ($fbLocked) {
+                Write-Output '[!!]  TPM Locked Out (WMI)'
+                Write-Output '       The TPM is currently refusing authentication commands.'
+                Write-Output '       Wait for the lockout to expire with the system powered on.'
+                $issueCount++
+            }
+        } else {
+            Write-Output '[!!]  TPM Not Present'
+            Write-Output '       Win32_Tpm WMI reports no active TPM.'
+            Write-Output '       Check BIOS/UEFI settings -- TPM may be disabled at the silicon level.'
             $issueCount++
         }
+        Write-Output ''
+        Write-Output '[i]   Limited diagnostics available via WMI fallback.'
+        Write-Output '       For full TPM health analysis, ensure the TrustedPlatformModule PowerShell module'
+        Write-Output '       is available. Run: Get-Module -ListAvailable TrustedPlatformModule'
     } else {
         Write-Output '[!!]  TPM Status Unavailable'
-        Write-Output '       Get-Tpm cmdlet failed. tpmtool.exe not found.'
+        Write-Output '       Get-Tpm cmdlet failed and Win32_Tpm WMI class returned no data.'
         Write-Output '       TPM infrastructure may be missing or corrupted.'
         $issueCount++
+
+        # Tertiary fallback: dump raw tpmtool output (NOT parsed -- L10N-safe).
+        # Gives the tech something to read regardless of OS language.
+        $tpmToolRaw = $null
+        try { $tpmToolRaw = & tpmtool.exe getdeviceinformation 2>&1 } catch { }
+        if ($tpmToolRaw) {
+            Write-Output ''
+            Write-Output '[i]   Raw tpmtool.exe output (uninterpreted -- for manual review):'
+            $tpmToolLines = @($tpmToolRaw | ForEach-Object { "$_" })
+            $showMax = [math]::Min($tpmToolLines.Count, 30)
+            for ($tl = 0; $tl -lt $showMax; $tl++) {
+                Write-Output "       $($tpmToolLines[$tl])"
+            }
+            if ($tpmToolLines.Count -gt 30) {
+                Write-Output "       ... ($($tpmToolLines.Count - 30) more lines truncated)"
+            }
+        }
     }
+
 } else {
     # Get-Tpm succeeded
     $tpmPresent = $tpmObj.TpmPresent
@@ -199,9 +222,9 @@ if (-not $tpmPresent) {
 if ($usedFallback) {
     Write-Output ''
     if ($issueCount -eq 0 -and $warnCount -eq 0) {
-        Write-Output 'RESULT: No issues detected (limited diagnostics via tpmtool.exe).'
+        Write-Output 'RESULT: No issues detected (limited diagnostics via WMI fallback).'
     } elseif ($issueCount -eq 0) {
-        Write-Output "RESULT: $warnCount warning(s) found (limited diagnostics via tpmtool.exe)."
+        Write-Output "RESULT: $warnCount warning(s) found (limited diagnostics via WMI fallback)."
     } else {
         Write-Output "RESULT: $issueCount issue(s) and $warnCount warning(s) found (limited diagnostics)."
     }
@@ -220,7 +243,6 @@ if ($usedFallback) {
 Write-Output '--- TPM Version ---'
 
 $tpmVersion = ''
-$tpmPpiVer  = ''
 
 try {
     $wmiTpm = Get-CimInstance -Namespace 'ROOT\CIMv2\Security\MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction Stop
@@ -252,7 +274,6 @@ try {
         # PPI version
         $ppiVer = $wmiTpm.PhysicalPresenceVersionInfo
         if (-not [string]::IsNullOrWhiteSpace($ppiVer)) {
-            $tpmPpiVer = $ppiVer
             Write-Output "[i]   Physical Presence Interface: $ppiVer"
         }
     } else {
@@ -363,6 +384,43 @@ if ([string]::IsNullOrWhiteSpace($mfgId)) {
             Write-Output '       This firmware has an ECDSA side-channel timing attack vulnerability.'
             Write-Output '       Attackers can extract the ECDSA private key via side-channel analysis.'
             Write-Output '       ACTION: Visit OEM support site for a TPM firmware update immediately.'
+            $issueCount++
+        }
+    }
+
+    # --- Nuvoton OOB Read (CVE-2025-2884) ---
+    # Affects NPCT7xx series. Fixed in firmware 7.2.4.1.
+    # Nuvoton SA-005 / TCG VRT0009. Confirmed by NIST, CERT/CC, and Nuvoton.
+    if ($mfgId -eq 'NTC') {
+        $verParts = @()
+        if (-not [string]::IsNullOrWhiteSpace($verForCheck)) {
+            $verParts = $verForCheck -split '\.'
+        }
+
+        $isVulnerable = $false
+        # Safe version: 7.2.4.1 or higher (4-part comparison)
+        $safeVer = @(7, 2, 4, 1)
+        $curVer = @(0, 0, 0, 0)
+        for ($vi = 0; $vi -lt [math]::Min($verParts.Count, 4); $vi++) {
+            try { $curVer[$vi] = [int]$verParts[$vi] } catch { }
+        }
+
+        if ($verParts.Count -ge 2) {
+            for ($vi = 0; $vi -lt 4; $vi++) {
+                if ($curVer[$vi] -lt $safeVer[$vi]) { $isVulnerable = $true; break }
+                if ($curVer[$vi] -gt $safeVer[$vi]) { break }
+            }
+        }
+
+        if ($isVulnerable) {
+            $vulnFound = $true
+            Write-Output '[!!]  Nuvoton TPM -- CVE-2025-2884 (OOB Read Vulnerability)'
+            Write-Output "       Manufacturer: $mfgId (Nuvoton NPCT7xx). Firmware: $verForCheck."
+            Write-Output '       This firmware has an out-of-bounds read flaw in CryptHmacSign.'
+            Write-Output '       An attacker with local TPM access can crash the TPM into a persistent'
+            Write-Output '       Denial of Service state, blocking ALL hardware-backed crypto operations.'
+            Write-Output '       ACTION: Update TPM firmware to 7.2.4.1 or later via OEM support.'
+            Write-Output '       WORKAROUND: A full power cycle (hard reset) restores TPM after crash.'
             $issueCount++
         }
     }

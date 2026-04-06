@@ -42,6 +42,9 @@ $hresultMap = @{
     '0x80310030' = @{ Name = 'FVE_E_NOT_FOUND'; Meaning = 'TPM not found -- hardware not detected or not enabled in BIOS/UEFI firmware.'; Route = 'Run BL002 BLTpmHealth (check BIOS settings)' }
     '0x80310019' = @{ Name = 'FVE_E_NOT_ALLOWED'; Meaning = 'Volume cannot be encrypted -- wrong partition type, dynamic disk, or unsupported volume configuration.'; Route = 'Run BL003 BLHardwarePrereqs' }
     '0x8031006E' = @{ Name = 'FVE_E_BUSY'; Meaning = 'BitLocker is already performing an encryption or decryption operation on this volume.'; Route = 'Wait for current operation or cancel with manage-bde -pause' }
+    '0x8031000A' = @{ Name = 'FVE_E_AD_SCHEMA_NOT_INSTALLED'; Meaning = 'AD DS forest lacks BitLocker schema extensions -- recovery keys cannot be stored in Active Directory.'; Route = 'Escalate to Domain Admins -- they must extend the AD schema for BitLocker (not an endpoint issue)' }
+    '0x80280803' = @{ Name = 'TPM_E_DEFEND_LOCK_RUNNING'; Meaning = 'TPM dictionary attack lockout is active -- the TPM is refusing all auth commands until the timeout expires.'; Route = 'Run BL002 BLTpmHealth (leave system powered on until lockout expires)' }
+    '0x8004100E' = @{ Name = 'WBEM_E_INVALID_NAMESPACE'; Meaning = 'WMI namespace ROOT\CIMV2\Security\MicrosoftVolumeEncryption is missing or corrupted -- no programmatic BitLocker control possible.'; Route = 'Rebuild WMI repository: winmgmt /resetrepository (disruptive -- schedule maintenance window)' }
 }
 
 # Collected HRESULTs from events
@@ -133,13 +136,14 @@ try {
     $xpathMgmt = "*[System[TimeCreated[timediff(@SystemTime) <= $cutoffMs] and ($(($mgmtEventIds | ForEach-Object { "EventID=$_" }) -join ' or '))]]"
     $mgmtEvents = @(Get-WinEvent -LogName $mgmtLogName -FilterXPath $xpathMgmt -ErrorAction Stop)
 } catch {
-    if ($_.Exception.Message -match 'No events were found') {
+    $fqeid = $_.FullyQualifiedErrorId
+    if ($fqeid -eq 'NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand') {
         $findings.Add([PSCustomObject]@{
             Check  = 'Management Log Events'
             Status = 'INFO'
             Detail = "No BitLocker management events found in the last $daysBack day(s)."
         })
-    } elseif ($_.Exception.Message -match 'could not be found|does not exist|is not valid') {
+    } elseif ($fqeid -like '*EventLogNotFoundException*') {
         $mgmtAvailable = $false
         $findings.Add([PSCustomObject]@{
             Check  = 'Management Log'
@@ -192,11 +196,11 @@ foreach ($evt in $mgmtEvents) {
             if ($msg -match 'PCR\s*[:\[]?\s*([0-9,\s]+)') { $extraContext = " PCRs: $($Matches[1].Trim())" }
         }
         773 {
-            # Suspension -- check if auto-triggered
+            # Suspension -- best-effort context extraction (may not match on non-English OS)
             if ($msg -match 'reboot|update|firmware|bios') { $extraContext = ' (likely auto-suspend for update)' }
         }
         851 {
-            # Silent encryption failed -- extract reason
+            # Silent encryption failed -- best-effort context (Event ID is the real diagnostic)
             if ($msg -match 'Group Policy') { $extraContext = ' (Group Policy conflict detected)' }
             if ($msg -match 'WinRE|recovery environment') { $extraContext = ' (WinRE prerequisite missing)' }
         }
@@ -233,8 +237,9 @@ try {
     $xpathOp = "*[System[TimeCreated[timediff(@SystemTime) <= $cutoffMs]]]"
     $opEvents = @(Get-WinEvent -LogName $opLogName -FilterXPath $xpathOp -MaxEvents 50 -ErrorAction Stop)
 } catch {
-    if (-not ($_.Exception.Message -match 'No events were found')) {
-        if ($_.Exception.Message -match 'could not be found|does not exist|is not valid') {
+    $fqeid = $_.FullyQualifiedErrorId
+    if ($fqeid -ne 'NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand') {
+        if ($fqeid -like '*EventLogNotFoundException*') {
             # Channel may not exist -- graceful skip
         } else {
             $findings.Add([PSCustomObject]@{
@@ -310,7 +315,8 @@ try {
     $xpathTpm = "*[System[($sourceFilter) and TimeCreated[timediff(@SystemTime) <= $cutoffMs]]]"
     $tpmEvents = @(Get-WinEvent -LogName 'System' -FilterXPath $xpathTpm -MaxEvents 30 -ErrorAction Stop)
 } catch {
-    if (-not ($_.Exception.Message -match 'No events were found')) {
+    $fqeid = $_.FullyQualifiedErrorId
+    if ($fqeid -ne 'NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand') {
         $findings.Add([PSCustomObject]@{
             Check  = 'System TPM Events'
             Status = 'INFO'

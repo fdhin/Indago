@@ -143,12 +143,67 @@ $cspPath = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\BitLocker'
 $cspExists = Test-Path $cspPath
 
 if (-not $cspExists) {
-    Write-Output '[!]   BitLocker CSP Policy: NOT RECEIVED'
-    Write-Output '       Registry path not found:'
-    Write-Output "       $cspPath"
-    Write-Output '       Intune has not delivered a BitLocker policy to this device.'
-    Write-Output '       Force an Intune sync and wait 15 minutes, then re-check.'
-    $warnCount++
+    # Check for ghost policies trapped in the SYSTEM profile hive (HKU\.DEFAULT).
+    # During Autopilot, the MDM client runs as SYSTEM. A known failure mode causes
+    # BitLocker CSP payloads to land in the SYSTEM user hive instead of the machine
+    # hive, producing the infamous Intune "Error 65000" with no visible root cause.
+    $ghostPath = 'Registry::HKEY_USERS\.DEFAULT\Software\Microsoft\PolicyManager\current\Device\BitLocker'
+    $ghostExists = Test-Path $ghostPath
+
+    if ($ghostExists) {
+        Write-Output '[!!]  BitLocker CSP Policy: TRAPPED IN SYSTEM PROFILE HIVE'
+        Write-Output '       Policy NOT found in machine hive (HKLM):'
+        Write-Output "       $cspPath"
+        Write-Output '       Policy FOUND in SYSTEM user hive (HKU\.DEFAULT):'
+        Write-Output "       $ghostPath"
+        Write-Output '       Root cause: Autopilot enrolled under SYSTEM context and the MDM client'
+        Write-Output '       wrote CSP payloads to the wrong registry hive. This is the cause of'
+        Write-Output '       Intune "Error 65000" during BitLocker provisioning.'
+        Write-Output '       Remediation: re-enroll the device or manually move the policy keys'
+        Write-Output '       from HKU\.DEFAULT to HKLM\SOFTWARE\Microsoft\PolicyManager.'
+        $issueCount++
+    }
+    else {
+        # Check for policies staged in the Provider path that failed to merge into Current.
+        # PolicyManager pipeline: Providers\<GUID>\default -> merge -> current\device.
+        # If the policy exists in staging but not current, the merge was rejected -- typically
+        # because a legacy GPO won conflict resolution and blocked the Intune payload.
+        $provBasePath = 'HKLM:\SOFTWARE\Microsoft\PolicyManager\Providers'
+        $stagedGuidFound = $null
+
+        if (Test-Path $provBasePath) {
+            $providers = $null
+            try {
+                $providers = Get-ChildItem -Path $provBasePath -ErrorAction Stop |
+                    Where-Object { $_.PSChildName -match '^[0-9a-fA-F-]{36}$' }
+            } catch { }
+            if ($providers) {
+                foreach ($prov in $providers) {
+                    $checkPath = "$($prov.PSPath)\default\Device\BitLocker"
+                    if (Test-Path $checkPath) { $stagedGuidFound = $prov.PSChildName; break }
+                }
+            }
+        }
+
+        if ($stagedGuidFound) {
+            Write-Output '[!!]  BitLocker CSP Policy: MERGE REJECTED (Staged but not Current)'
+            Write-Output "       Policy FOUND in Staging Provider: $stagedGuidFound"
+            Write-Output '       Policy NOT found in Active Current: HKLM\...\current\device\BitLocker'
+            Write-Output '       Root cause: Intune successfully delivered the policy to the device, but'
+            Write-Output '       the Windows PolicyManager refused to merge it into the active configuration.'
+            Write-Output '       This is almost always caused by an overlapping legacy Active Directory GPO.'
+            Write-Output '       Run BL006 BLPolicyConflict to identify the blocking GPO.'
+            $issueCount++
+        }
+        else {
+            Write-Output '[!]   BitLocker CSP Policy: NOT RECEIVED'
+            Write-Output '       Registry path not found:'
+            Write-Output "       $cspPath"
+            Write-Output '       Intune has not delivered a BitLocker policy to this device.'
+            Write-Output '       Force an Intune sync and wait 15 minutes, then re-check.'
+            $warnCount++
+        }
+    }
 } else {
     # RequireDeviceEncryption
     $requireEncrypt = Get-RegVal -Path $cspPath -Name 'RequireDeviceEncryption'
@@ -354,6 +409,26 @@ if ($cspExists) {
                 Write-Output "       Policy requires: $policyName."
                 Write-Output '       BitLocker cannot change ciphers on an encrypted volume.'
                 Write-Output '       A full decrypt/re-encrypt cycle is required to comply.'
+                # Flag the XTS-128 vs XTS-256 Autopilot race condition on pre-24H2 builds.
+                # Windows auto-encrypts at XTS-AES-128 during OOBE before the Intune policy
+                # (typically XTS-AES-256) finishes downloading. 24H2 introduced the OOBE
+                # Deferral Mechanism to prevent this.
+                if ($currentInt -eq 6 -and $osCipherInt -eq 7) {
+                    $rcBuild = 0
+                    try {
+                        $rcNtVer = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+                        $rcBuild = [int]$rcNtVer.CurrentBuildNumber
+                    } catch { }
+                    if ($rcBuild -gt 0 -and $rcBuild -lt 26100) {
+                        Write-Output ''
+                        Write-Output "[i]   DIAGNOSTIC INSIGHT: Autopilot Cipher Race Condition (build $rcBuild)"
+                        Write-Output '       Windows natively encrypted at XTS-AES-128 during OOBE before the'
+                        Write-Output '       Intune XTS-AES-256 policy finished downloading. Pre-24H2 builds'
+                        Write-Output '       lack the OOBE Deferral Mechanism that prevents this race condition.'
+                        Write-Output '       This is not a policy error -- the device encrypted with OS defaults'
+                        Write-Output '       before MDM policy delivery completed.'
+                    }
+                }
                 $warnCount++
                 $comparisonDone = $true
             }
@@ -539,6 +614,61 @@ if ($null -eq $mdmCert) {
         } else {
             Write-Output '[OK]  MDM Device Certificate'
             Write-Output "       Issuer: $issuerDisplay. Expires: $expiresStr. Valid ($daysRemaining days remaining)."
+        }
+    }
+}
+
+Write-Output ''
+
+# 5c: Ghost MDM Enrollment Detection
+# Orphaned GUID keys in HKLM\SOFTWARE\Microsoft\Enrollments\ cause re-enrollment
+# to fail because the MDM client thinks the device is already managed.
+$enrollPath = 'HKLM:\SOFTWARE\Microsoft\Enrollments'
+
+if (Test-Path $enrollPath) {
+    $enrollKeys = $null
+    try {
+        $enrollKeys = Get-ChildItem -Path $enrollPath -ErrorAction Stop |
+            Where-Object { $_.PSChildName -match '^[{(]?[0-9a-fA-F-]{36}[})]?$' }
+    }
+    catch { }
+
+    if ($enrollKeys) {
+        $intuneEnrollments = [System.Collections.Generic.List[PSCustomObject]]::new()
+        foreach ($key in $enrollKeys) {
+            $provId = Get-RegVal -Path $key.PSPath -Name 'ProviderID'
+            if ($provId -eq 'MS DM Server') {
+                $enrollGuid = $key.PSChildName
+                $upn = Get-RegVal -Path $key.PSPath -Name 'UPN'
+                $upnStr = if ($upn) { $upn } else { 'No UPN' }
+                $null = $intuneEnrollments.Add([PSCustomObject]@{ Guid = $enrollGuid; UPN = $upnStr })
+            }
+        }
+
+        if ($intuneEnrollments.Count -gt 1) {
+            Write-Output "[!!]  Ghost MDM Enrollment: $($intuneEnrollments.Count) Intune enrollment GUIDs found"
+            Write-Output '       Only one active enrollment should exist. Multiple GUIDs indicate'
+            Write-Output '       orphaned enrollments from failed provisioning or stale disenrollment.'
+            foreach ($enr in $intuneEnrollments) {
+                Write-Output "       - $($enr.Guid) ($($enr.UPN))"
+            }
+            Write-Output "       Remediation: delete orphaned GUID keys from $enrollPath"
+            Write-Output '       then re-enroll the device.'
+            $issueCount++
+        }
+        elseif ($intuneEnrollments.Count -eq 1 -and ([string]::IsNullOrEmpty($mdmUrl))) {
+            # Enrollment GUID exists but dsregcmd shows no MdmUrl -- ghost enrollment
+            Write-Output '[!!]  Ghost MDM Enrollment: GUID present but no MDM URL'
+            Write-Output "       GUID: $($intuneEnrollments[0].Guid)"
+            Write-Output '       dsregcmd reports no MdmUrl, but an Intune enrollment key exists.'
+            Write-Output '       This stale GUID blocks re-enrollment (error 0x8018002b).'
+            Write-Output "       Remediation: delete $enrollPath\$($intuneEnrollments[0].Guid)"
+            Write-Output '       then re-enroll the device.'
+            $issueCount++
+        }
+        elseif ($intuneEnrollments.Count -eq 1) {
+            Write-Output "[OK]  MDM Enrollment Registry: 1 Intune enrollment GUID found"
+            Write-Output "       GUID: $($intuneEnrollments[0].Guid). UPN: $($intuneEnrollments[0].UPN)."
         }
     }
 }

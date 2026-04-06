@@ -75,7 +75,8 @@ try {
     $xpathFilter = "*[System[TimeCreated[timediff(@SystemTime) <= $cutoffMs] and ($(($protectionEventIds | ForEach-Object { "EventID=$_" }) -join ' or '))]]"
     $protectionEvents = @(Get-WinEvent -LogName 'Microsoft-Windows-Windows Defender/Operational' -FilterXPath $xpathFilter -ErrorAction Stop)
 } catch {
-    if ($_.Exception.Message -match 'No events were found') {
+    $fqeid = $_.FullyQualifiedErrorId
+    if ($fqeid -eq 'NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand') {
         $findings.Add([PSCustomObject]@{
             Check  = 'Protection Events'
             Status = 'INFO'
@@ -221,7 +222,8 @@ try {
     $xpathFilter2 = "*[System[TimeCreated[timediff(@SystemTime) <= $cutoffMs] and ($(($threatEventIds | ForEach-Object { "EventID=$_" }) -join ' or '))]]"
     $threatEvents = @(Get-WinEvent -LogName 'Microsoft-Windows-Windows Defender/Operational' -FilterXPath $xpathFilter2 -ErrorAction Stop)
 } catch {
-    if ($_.Exception.Message -match 'No events were found') {
+    $fqeid = $_.FullyQualifiedErrorId
+    if ($fqeid -eq 'NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand') {
         $findings.Add([PSCustomObject]@{
             Check  = 'Threat Events'
             Status = 'OK'
@@ -277,24 +279,34 @@ if ($threatEvents.Count -gt 0) {
     # Report detections (up to 10 most recent)
     $showDetections = [Math]::Min($detections.Count, 10)
     for ($i = 0; $i -lt $showDetections; $i++) {
-        $evt = $detections[$i]
+        # Extract threat name from Properties[] (language-independent)
+        # Defender Event 1006/1116: Properties[5] = ThreatName, Properties[3] = SeverityID
+        $threatName = 'Unknown'
+        $severity = 'Unknown'
+        $props = $evt.Properties
+        if ($props -and $props.Count -gt 5) {
+            $propName = "$($props[5].Value)".Trim()
+            if ($propName) { $threatName = $propName }
+        }
+        if ($props -and $props.Count -gt 3) {
+            $sevId = $props[3].Value
+            $severity = switch ([int]$sevId) {
+                1 { 'Low' }
+                2 { 'Medium' }
+                4 { 'High' }
+                5 { 'Severe' }
+                default { "SeverityID=$sevId" }
+            }
+        }
+        # Fallback: try localized message parsing if Properties[] was empty
+        if ($threatName -eq 'Unknown') {
+            $msg = $evt.Message
+            if (-not $msg) { try { $msg = $evt.FormatDescription() } catch { $msg = '' } }
+            if ($msg -match 'Name:\s*(.+?)[\r\n]') { $threatName = $Matches[1].Trim() }
+        }
+
         $msg = $evt.Message
         if (-not $msg) { try { $msg = $evt.FormatDescription() } catch { $msg = '' } }
-
-        # Try to extract threat name from message
-        $threatName = 'Unknown'
-        if ($msg -match 'Name:\s*(.+?)[\r\n]') {
-            $threatName = $Matches[1].Trim()
-        } elseif ($msg -match 'threat\s+name[:\s]+([^\r\n]+)') {
-            $threatName = $Matches[1].Trim()
-        }
-
-        # Try to extract severity
-        $severity = 'Unknown'
-        if ($msg -match 'Severity:\s*(.+?)[\r\n]') {
-            $severity = $Matches[1].Trim()
-        }
-
         $codes = Extract-HResults -Message $msg
         foreach ($c in $codes) { $observedHresults[$c] = $true }
 
@@ -313,14 +325,34 @@ if ($threatEvents.Count -gt 0) {
             $codes = Extract-HResults -Message $msg
             foreach ($c in $codes) { $observedHresults[$c] = $true }
 
+            # Extract threat name from Properties[] (language-independent)
+            # Defender Event 1117/1118: Properties[5] = ThreatName, Properties[14] = StatusCode
             $threatName = 'Unknown'
-            if ($msg -match 'Name:\s*(.+?)[\r\n]') {
+            $props = $evt.Properties
+            if ($props -and $props.Count -gt 5) {
+                $propName = "$($props[5].Value)".Trim()
+                if ($propName) { $threatName = $propName }
+            }
+            # Fallback to message parsing
+            if ($threatName -eq 'Unknown' -and $msg -match 'Name:\s*(.+?)[\r\n]') {
                 $threatName = $Matches[1].Trim()
             }
 
-            # Try to extract status ID
+            # Extract status ID from Properties[] or message
             $statusDetail = ''
-            if ($msg -match 'Status:\s*(\d+)') {
+            if ($props -and $props.Count -gt 14) {
+                $statusId = 0
+                try { $statusId = [int]$props[14].Value } catch { }
+                if ($statusId -ne 0) {
+                    if ($threatStatusMap.ContainsKey($statusId)) {
+                        $statusDetail = " | Status: $($threatStatusMap[$statusId].Label)"
+                    } else {
+                        $statusDetail = " | StatusID: $statusId"
+                    }
+                }
+            }
+            # Fallback to message parsing
+            if (-not $statusDetail -and $msg -match 'Status:\s*(\d+)') {
                 $statusId = [int]$Matches[1]
                 if ($threatStatusMap.ContainsKey($statusId)) {
                     $statusDetail = " | Status: $($threatStatusMap[$statusId].Label)"
@@ -329,9 +361,25 @@ if ($threatEvents.Count -gt 0) {
                 }
             }
 
-            # Try to extract additional actions
+            # Extract additional actions from Properties[] or message
             $actionsDetail = ''
-            if ($msg -match 'Additional Actions?:?\s*(\d+)') {
+            if ($props -and $props.Count -gt 18) {
+                $actionBits = 0
+                try { $actionBits = [int]$props[18].Value } catch { }
+                if ($actionBits -ne 0) {
+                    $actionsList = @()
+                    foreach ($bit in $actionBitMap.Keys) {
+                        if (($actionBits -band $bit) -ne 0) {
+                            $actionsList += $actionBitMap[$bit]
+                        }
+                    }
+                    if ($actionsList.Count -gt 0) {
+                        $actionsDetail = " | Actions: $($actionsList -join ', ')"
+                    }
+                }
+            }
+            # Fallback to message parsing
+            if (-not $actionsDetail -and $msg -match 'Additional Actions?:?\s*(\d+)') {
                 $actionBits = [int]$Matches[1]
                 $actionsList = @()
                 foreach ($bit in $actionBitMap.Keys) {
@@ -370,7 +418,8 @@ try {
     $xpathSC = "*[System[Provider[@Name='SecurityCenter'] and TimeCreated[timediff(@SystemTime) <= $cutoffMs] and (EventID=15 or EventID=16 or EventID=17)]]"
     $secCenterEvents = @(Get-WinEvent -LogName 'Application' -FilterXPath $xpathSC -ErrorAction Stop)
 } catch {
-    if (-not ($_.Exception.Message -match 'No events were found')) {
+    $fqeid = $_.FullyQualifiedErrorId
+    if ($fqeid -ne 'NoMatchingEventsFound,Microsoft.PowerShell.Commands.GetWinEventCommand') {
         $findings.Add([PSCustomObject]@{
             Check  = 'Security Center Events'
             Status = 'INFO'

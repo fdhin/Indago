@@ -37,8 +37,10 @@ Write-Output '--- Service Dependencies ---'
 
 $svcChecks = @(
     @{ Name = 'BDESVC'; Display = 'BitLocker Drive Encryption Service' },
-    @{ Name = 'TBS';    Display = 'TPM Base Services' },
-    @{ Name = 'RpcSs';  Display = 'Remote Procedure Call (RPC)' }
+    @{ Name = 'TBS'; Display = 'TPM Base Services' },
+    @{ Name = 'KeyIso'; Display = 'CNG Key Isolation' },
+    @{ Name = 'BFE'; Display = 'Base Filtering Engine' },
+    @{ Name = 'RpcSs'; Display = 'Remote Procedure Call (RPC)' }
 )
 
 $svcIssues = 0
@@ -46,7 +48,8 @@ foreach ($svc in $svcChecks) {
     $svcObj = $null
     try {
         $svcObj = Get-Service -Name $svc.Name -ErrorAction Stop
-    } catch {
+    }
+    catch {
         # Service may not exist
     }
 
@@ -70,11 +73,13 @@ foreach ($svc in $svcChecks) {
             $blockers.Add("Service $($svc.Name) is $status (must be Running)")
             $svcIssues++
             $findings.Add([PSCustomObject]@{ Check = "Service: $($svc.Name)"; Status = 'ISSUE'; Detail = "Status: $status. Must be Running." })
-        } else {
+        }
+        else {
             Write-Output "[OK]  $($svc.Display) ($($svc.Name)): Running"
             $findings.Add([PSCustomObject]@{ Check = "Service: $($svc.Name)"; Status = 'OK'; Detail = 'Running.' })
         }
-    } elseif ($svc.Name -eq 'BDESVC') {
+    }
+    elseif ($svc.Name -eq 'BDESVC') {
         # BDESVC is Manual (Trigger Start) by default -- Disabled is a problem
         if ($startType -eq 'Disabled') {
             Write-Output "[!!]  $($svc.Display) ($($svc.Name)): DISABLED"
@@ -82,7 +87,8 @@ foreach ($svc in $svcChecks) {
             $blockers.Add("Service BDESVC is Disabled")
             $svcIssues++
             $findings.Add([PSCustomObject]@{ Check = "Service: $($svc.Name)"; Status = 'ISSUE'; Detail = "StartType: Disabled. Must not be Disabled." })
-        } else {
+        }
+        else {
             $detail = "Status: $status, StartType: $startType."
             if ($status -ne 'Running') {
                 $detail += ' Not currently running (normal -- BDESVC is trigger-start).'
@@ -90,7 +96,8 @@ foreach ($svc in $svcChecks) {
             Write-Output "[OK]  $($svc.Display) ($($svc.Name)): $startType / $status"
             $findings.Add([PSCustomObject]@{ Check = "Service: $($svc.Name)"; Status = 'OK'; Detail = $detail })
         }
-    } elseif ($svc.Name -eq 'TBS') {
+    }
+    elseif ($svc.Name -eq 'TBS') {
         # TBS should be running or at least not Disabled
         if ($startType -eq 'Disabled') {
             Write-Output "[!!]  $($svc.Display) ($($svc.Name)): DISABLED"
@@ -98,12 +105,50 @@ foreach ($svc in $svcChecks) {
             $blockers.Add("Service TBS is Disabled")
             $svcIssues++
             $findings.Add([PSCustomObject]@{ Check = "Service: $($svc.Name)"; Status = 'ISSUE'; Detail = "StartType: Disabled. Required for TPM operations." })
-        } elseif ($status -ne 'Running') {
+        }
+        elseif ($status -ne 'Running') {
             Write-Output "[!]   $($svc.Display) ($($svc.Name)): $status"
             Write-Output "       TBS is not running. TPM communication may fail."
             $warnings.Add("Service TBS is $status")
             $findings.Add([PSCustomObject]@{ Check = "Service: $($svc.Name)"; Status = 'WARN'; Detail = "Status: $status. TPM operations may fail." })
-        } else {
+        }
+        else {
+            Write-Output "[OK]  $($svc.Display) ($($svc.Name)): Running"
+            $findings.Add([PSCustomObject]@{ Check = "Service: $($svc.Name)"; Status = 'OK'; Detail = 'Running.' })
+        }
+    }
+    elseif ($svc.Name -eq 'KeyIso') {
+        # KeyIso is Manual (Trigger Start) -- handles FVEK/VMK key generation via CNG.
+        # If Disabled, key operations fail with 0x80090016 (NTE_BAD_KEYSET).
+        if ($startType -eq 'Disabled') {
+            Write-Output "[!!]  $($svc.Display) ($($svc.Name)): DISABLED"
+            Write-Output "       CNG Key Isolation is Disabled. BitLocker key generation will fail."
+            Write-Output "       Error 0x80090016 (NTE_BAD_KEYSET) is the typical symptom."
+            $blockers.Add("Service KeyIso is Disabled")
+            $svcIssues++
+            $findings.Add([PSCustomObject]@{ Check = "Service: $($svc.Name)"; Status = 'ISSUE'; Detail = "StartType: Disabled. Key generation blocked." })
+        }
+        else {
+            $detail = "Status: $status, StartType: $startType."
+            if ($status -ne 'Running') {
+                $detail += ' Not currently running (normal -- KeyIso is trigger-start).'
+            }
+            Write-Output "[OK]  $($svc.Display) ($($svc.Name)): $startType / $status"
+            $findings.Add([PSCustomObject]@{ Check = "Service: $($svc.Name)"; Status = 'OK'; Detail = $detail })
+        }
+    }
+    elseif ($svc.Name -eq 'BFE') {
+        # BFE must be running -- underpins WFP/WinHTTP for HTTPS key escrow.
+        # If stopped, escrow to Azure AD/Entra ID fails with 0x80072EFE.
+        if ($status -ne 'Running') {
+            Write-Output "[!!]  $($svc.Display) ($($svc.Name)): $status"
+            Write-Output "       BFE must be running for HTTPS key escrow to Azure AD/Entra ID."
+            Write-Output "       Error 0x80072EFE (connection aborted) is the typical symptom."
+            $blockers.Add("Service $($svc.Name) is $status (must be Running)")
+            $svcIssues++
+            $findings.Add([PSCustomObject]@{ Check = "Service: $($svc.Name)"; Status = 'ISSUE'; Detail = "Status: $status. Must be Running for key escrow." })
+        }
+        else {
             Write-Output "[OK]  $($svc.Display) ($($svc.Name)): Running"
             $findings.Add([PSCustomObject]@{ Check = "Service: $($svc.Name)"; Status = 'OK'; Detail = 'Running.' })
         }
@@ -113,6 +158,185 @@ foreach ($svc in $svcChecks) {
 if ($svcIssues -eq 0) {
     Write-Output "[OK]  All required services are available."
 }
+Write-Output ''
+
+# ============================================================
+# Section 0b: Third-Party FDE Collision Detection
+# Prevents catastrophic double-encryption by detecting competing
+# full-disk encryption products before BitLocker enablement.
+# Detection uses only confirmed vendor artifacts (no Win32_Product).
+# ============================================================
+Write-Output '--- Third-Party FDE Collision Detection ---'
+
+# --- Layer 1: Known FDE services (fastest, most definitive) ---
+$fdeServices = @(
+    @{ Short = 'veracrypt';      Vendor = 'VeraCrypt';              Severity = 'BLOCKER' }
+    @{ Short = 'MfeEpePc';       Vendor = 'McAfee/Trellix';         Severity = 'BLOCKER' }
+    @{ Short = 'SGNAuthService'; Vendor = 'Sophos SafeGuard';       Severity = 'BLOCKER' }
+    @{ Short = 'Pointsec';       Vendor = 'Check Point (Pointsec)'; Severity = 'BLOCKER' }
+    @{ Short = 'Pointsec_start'; Vendor = 'Check Point (Pointsec)'; Severity = 'BLOCKER' }
+    @{ Short = 'KAVFS';          Vendor = 'Kaspersky';              Severity = 'WARN' }
+    @{ Short = 'KAVFSGT';        Vendor = 'Kaspersky';              Severity = 'WARN' }
+)
+
+$fdeDetected = $false
+$fdeVendors = [System.Collections.Generic.List[string]]::new()
+
+foreach ($fdeSvc in $fdeServices) {
+    $svcObj = $null
+    try { $svcObj = Get-Service -Name $fdeSvc.Short -ErrorAction Stop } catch { }
+    if ($svcObj) {
+        $fdeDetected = $true
+        $label = "$($fdeSvc.Vendor) service '$($fdeSvc.Short)' (Status: $($svcObj.Status))"
+        if ($fdeSvc.Severity -eq 'BLOCKER') {
+            Write-Output "[!!]  $label"
+            Write-Output '       Third-party FDE agent found. DO NOT enable BitLocker -- risk of data loss.'
+            $blockers.Add("Third-party FDE: $($fdeSvc.Vendor) ($($fdeSvc.Short))")
+            $findings.Add([PSCustomObject]@{ Check = 'FDE Collision'; Status = 'ISSUE'; Detail = $label })
+        }
+        else {
+            Write-Output "[!]   $label"
+            Write-Output '       Suite may include FDE. Verify encryption state before proceeding.'
+            $warnings.Add("Possible FDE suite: $($fdeSvc.Vendor) ($($fdeSvc.Short))")
+            $findings.Add([PSCustomObject]@{ Check = 'FDE Collision'; Status = 'WARN'; Detail = $label })
+        }
+        if (-not $fdeVendors.Contains($fdeSvc.Vendor)) { $fdeVendors.Add($fdeSvc.Vendor) }
+    }
+}
+
+# --- Layer 2: Registry uninstall keys (both 64-bit and WOW64 hives) ---
+$uninstallPaths = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+)
+
+# Severity: BLOCKER = confirmed FDE, WARN = suite that MAY include FDE, INFO = BitLocker wrapper
+$fdeProducts = @(
+    @{ Pattern = 'VeraCrypt';                        Vendor = 'VeraCrypt';          Severity = 'BLOCKER' }
+    @{ Pattern = 'McAfee Drive Encryption';          Vendor = 'McAfee/Trellix';     Severity = 'BLOCKER' }
+    @{ Pattern = 'Trellix Drive Encryption';         Vendor = 'McAfee/Trellix';     Severity = 'BLOCKER' }
+    @{ Pattern = 'Sophos SafeGuard Enterprise';      Vendor = 'Sophos SafeGuard';   Severity = 'BLOCKER' }
+    @{ Pattern = 'Sophos Central Device Encryption'; Vendor = 'Sophos CDE';         Severity = 'INFO' }
+    @{ Pattern = 'Check Point Full Disk Encryption'; Vendor = 'Check Point';        Severity = 'BLOCKER' }
+    @{ Pattern = 'Check Point Endpoint Security';    Vendor = 'Check Point';        Severity = 'WARN' }
+    @{ Pattern = 'DESlock';                          Vendor = 'DESlock/ESET';       Severity = 'BLOCKER' }
+    @{ Pattern = 'ESET Full Disk Encryption';        Vendor = 'ESET';               Severity = 'BLOCKER' }
+    @{ Pattern = 'ESET Endpoint Encryption';         Vendor = 'ESET';               Severity = 'BLOCKER' }
+    @{ Pattern = 'WinMagic SecureDoc';               Vendor = 'WinMagic';           Severity = 'BLOCKER' }
+    @{ Pattern = 'SecureDoc Disk Encryption';        Vendor = 'WinMagic';           Severity = 'BLOCKER' }
+    @{ Pattern = 'Kaspersky Endpoint Security';      Vendor = 'Kaspersky';          Severity = 'WARN' }
+    @{ Pattern = 'Symantec Endpoint Protection';     Vendor = 'Symantec/Broadcom';  Severity = 'WARN' }
+)
+
+$installedApps = @()
+foreach ($regPath in $uninstallPaths) {
+    try {
+        $items = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
+        if ($items) { $installedApps += $items }
+    }
+    catch { }
+}
+
+foreach ($fdeProd in $fdeProducts) {
+    $alreadyFound = $fdeVendors.Contains($fdeProd.Vendor)
+    foreach ($app in $installedApps) {
+        if ($app.DisplayName -and $app.DisplayName -match [regex]::Escape($fdeProd.Pattern)) {
+            $label = "Registry: '$($app.DisplayName)' ($($fdeProd.Vendor))"
+            if ($fdeProd.Severity -eq 'BLOCKER' -and -not $alreadyFound) {
+                $fdeDetected = $true
+                Write-Output "[!!]  $label"
+                Write-Output '       Third-party FDE installed. DO NOT enable BitLocker.'
+                $blockers.Add("Third-party FDE: $($fdeProd.Vendor) ($($app.DisplayName))")
+                $findings.Add([PSCustomObject]@{ Check = 'FDE Collision'; Status = 'ISSUE'; Detail = $label })
+            }
+            elseif ($fdeProd.Severity -eq 'INFO') {
+                Write-Output "[i]   $label"
+                Write-Output '       Sophos CDE manages BitLocker natively -- not a competing FDE.'
+                Write-Output '       BitLocker may already be enabled and managed by Sophos Central.'
+                $findings.Add([PSCustomObject]@{ Check = 'FDE Collision'; Status = 'INFO'; Detail = "$label (BitLocker wrapper)" })
+            }
+            elseif (-not $alreadyFound) {
+                $fdeDetected = $true
+                Write-Output "[!]   $label"
+                Write-Output '       Suite may include FDE. Verify encryption state before proceeding.'
+                $warnings.Add("Possible FDE suite: $($fdeProd.Vendor)")
+                $findings.Add([PSCustomObject]@{ Check = 'FDE Collision'; Status = 'WARN'; Detail = $label })
+            }
+            if (-not $fdeVendors.Contains($fdeProd.Vendor)) { $fdeVendors.Add($fdeProd.Vendor) }
+            break
+        }
+    }
+}
+
+# --- Layer 3: Kernel filter drivers via fltmc (ultimate source of truth) ---
+$fdeFilters = @(
+    @{ Name = 'veracrypt'; Vendor = 'VeraCrypt' }
+    @{ Name = 'MfeEpePC';  Vendor = 'McAfee/Trellix' }
+    @{ Name = 'prot_2k';   Vendor = 'Check Point' }
+    @{ Name = 'dlpcore';   Vendor = 'DESlock/ESET' }
+    @{ Name = 'klflt';     Vendor = 'Kaspersky' }
+    @{ Name = 'klif';      Vendor = 'Kaspersky' }
+    @{ Name = 'SophosED';  Vendor = 'Sophos' }
+)
+
+$fltOutput = $null
+try { $fltOutput = & fltmc.exe filters 2>&1 } catch { }
+
+if ($fltOutput) {
+    $fltLines = @($fltOutput | ForEach-Object { "$_" })
+
+    # Check for known FDE filter drivers
+    foreach ($fdeFilter in $fdeFilters) {
+        foreach ($line in $fltLines) {
+            if ($line -match "\b$([regex]::Escape($fdeFilter.Name))\b") {
+                if (-not $fdeVendors.Contains($fdeFilter.Vendor)) {
+                    $fdeDetected = $true
+                    Write-Output "[!!]  Kernel filter '$($fdeFilter.Name)' loaded ($($fdeFilter.Vendor))"
+                    Write-Output '       Active FDE driver in the storage stack. DO NOT enable BitLocker.'
+                    $blockers.Add("FDE kernel driver: $($fdeFilter.Name) ($($fdeFilter.Vendor))")
+                    $findings.Add([PSCustomObject]@{ Check = 'FDE Collision'; Status = 'ISSUE'; Detail = "Kernel filter: $($fdeFilter.Name) ($($fdeFilter.Vendor))" })
+                    $fdeVendors.Add($fdeFilter.Vendor)
+                }
+                break
+            }
+        }
+    }
+
+    # Altitude heuristic: any unknown driver in the crypto minifilter range (140000-149999).
+    # Microsoft mandates that cryptographic minifilters operate in this altitude range.
+    # This catches rebranded, obscure, or shadow-IT FDE products not in our known list.
+    $knownFilterNames = @($fdeFilters | ForEach-Object { $_.Name })
+    foreach ($line in $fltLines) {
+        # Skip header and separator lines
+        if ($line -match '^Filter' -or $line -match '^-') { continue }
+        $tokens = $line.Trim() -split '\s+'
+        if ($tokens.Count -lt 2) { continue }
+        $driverName = $tokens[0]
+        # Find the altitude value (5-6 digit number) in the line
+        $altToken = $null
+        foreach ($t in $tokens) {
+            if ($t -match '^\d{5,6}$') { $altToken = $t; break }
+        }
+        if ($altToken) {
+            $altitude = [int]$altToken
+            if ($altitude -ge 140000 -and $altitude -le 149999) {
+                if ($knownFilterNames -notcontains $driverName) {
+                    Write-Output "[!]   Unknown crypto-range driver: $driverName (altitude $altitude)"
+                    Write-Output '       Operating in the cryptographic minifilter range (140000-149999).'
+                    Write-Output '       May indicate an unidentified FDE product. Investigate before proceeding.'
+                    $warnings.Add("Unknown crypto-range driver: $driverName (altitude $altitude)")
+                    $findings.Add([PSCustomObject]@{ Check = 'FDE Collision'; Status = 'WARN'; Detail = "Unknown driver $driverName at crypto altitude $altitude" })
+                }
+            }
+        }
+    }
+}
+
+if (-not $fdeDetected) {
+    Write-Output '[OK]  No third-party FDE products detected. Safe to proceed with BitLocker.'
+    $findings.Add([PSCustomObject]@{ Check = 'FDE Collision'; Status = 'OK'; Detail = 'No competing FDE products found.' })
+}
+
 Write-Output ''
 
 # ============================================================
@@ -128,7 +352,8 @@ try {
     if ($LASTEXITCODE -ne 0 -and -not $bdeOutput) {
         $manageBdeAvailable = $false
     }
-} catch {
+}
+catch {
     $manageBdeAvailable = $false
 }
 
@@ -137,7 +362,8 @@ if (-not $manageBdeAvailable -or -not $bdeOutput) {
     Write-Output "       BitLocker feature may not be installed on this system."
     $blockers.Add('manage-bde.exe not available')
     $findings.Add([PSCustomObject]@{ Check = 'manage-bde availability'; Status = 'ISSUE'; Detail = 'manage-bde.exe not available or returned no output.' })
-} else {
+}
+else {
     $bdeLines = @($bdeOutput | ForEach-Object { "$_" })
 
     # Parse Conversion Status
@@ -147,7 +373,8 @@ if (-not $manageBdeAvailable -or -not $bdeOutput) {
             Write-Output "[OK]  Conversion Status: $conversionStatus"
             Write-Output "       Volume is eligible for new encryption."
             $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'OK'; Detail = "$conversionStatus -- eligible for encryption." })
-        } elseif ($conversionStatus -match 'Fully Encrypted') {
+        }
+        elseif ($conversionStatus -match 'Fully Encrypted') {
             # Check for ghost state (encrypted + protection off)
             $protStatus = Get-ParsedValue -Lines $bdeLines -Label 'Protection Status'
             if ($protStatus -and $protStatus -match 'Off') {
@@ -157,24 +384,28 @@ if (-not $manageBdeAvailable -or -not $bdeOutput) {
                 Write-Output '       Remediation: manage-bde -off C: to fully decrypt, then re-encrypt cleanly.'
                 $blockers.Add('Ghost state: FullyEncrypted with Protection Off (Waiting for Activation)')
                 $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'ISSUE'; Detail = 'GHOST STATE: FullyEncrypted + Protection Off. Remediate with manage-bde -off.' })
-            } else {
+            }
+            else {
                 Write-Output "[i]   Conversion Status: $conversionStatus / Protection: $protStatus"
                 Write-Output '       Volume is already encrypted and protected. No action needed.'
                 $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'INFO'; Detail = "Already encrypted. Protection: $protStatus." })
             }
-        } elseif ($conversionStatus -match 'Encryption in Progress|Decryption in Progress') {
+        }
+        elseif ($conversionStatus -match 'Encryption in Progress|Decryption in Progress') {
             Write-Output "[!!]  Conversion Status: $conversionStatus"
             Write-Output '       Volume is currently undergoing a conversion operation.'
             Write-Output '       Cannot start a new encryption while another is in progress.'
             $blockers.Add("Active conversion: $conversionStatus")
             $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'ISSUE'; Detail = "$conversionStatus -- cannot start new encryption." })
-        } else {
+        }
+        else {
             Write-Output "[!]   Conversion Status: $conversionStatus"
             Write-Output "       Unexpected conversion status. Investigate with BL001 BLStatusSnapshot."
             $warnings.Add("Unexpected conversion status: $conversionStatus")
             $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'WARN'; Detail = "Unexpected: $conversionStatus" })
         }
-    } else {
+    }
+    else {
         Write-Output "[!]   Could not parse Conversion Status from manage-bde output."
         $warnings.Add('Could not parse Conversion Status')
         $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'WARN'; Detail = 'Could not parse from manage-bde output.' })
@@ -200,7 +431,8 @@ if (-not $manageBdeAvailable -or -not $bdeOutput) {
             Write-Output '       Residual crypto metadata present. May be from a previous encryption attempt.'
             $warnings.Add("Residual encryption method: $encMethod on decrypted volume")
             $findings.Add([PSCustomObject]@{ Check = 'Encryption Method'; Status = 'WARN'; Detail = "Residual metadata: $encMethod on decrypted volume." })
-        } else {
+        }
+        else {
             Write-Output "[i]   Encryption Method: $encMethod"
             $findings.Add([PSCustomObject]@{ Check = 'Encryption Method'; Status = 'INFO'; Detail = $encMethod })
         }
@@ -221,10 +453,12 @@ if (-not $manageBdeAvailable -or -not $bdeOutput) {
         Write-Output '       Orphaned protectors may block fresh encryption. Remove with manage-bde -protectors -delete.'
         $blockers.Add("$kpCount orphaned key protector(s) on decrypted volume")
         $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'ISSUE'; Detail = "$kpCount orphaned protector(s) on FullyDecrypted volume." })
-    } elseif ($kpCount -eq 0 -and $conversionStatus -and $conversionStatus -match 'Fully Decrypted') {
+    }
+    elseif ($kpCount -eq 0 -and $conversionStatus -and $conversionStatus -match 'Fully Decrypted') {
         Write-Output "[OK]  No key protectors found. Clean slate for fresh encryption."
         $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'OK'; Detail = 'No protectors on decrypted volume. Clean slate.' })
-    } elseif ($kpCount -gt 0) {
+    }
+    elseif ($kpCount -gt 0) {
         Write-Output "[i]   Key Protectors: $kpCount protector(s) found."
         $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'INFO'; Detail = "$kpCount protector(s) present." })
     }
@@ -242,7 +476,8 @@ $encVol = $null
 
 try {
     $encVol = Get-CimInstance -Namespace 'ROOT\CIMV2\Security\MicrosoftVolumeEncryption' -ClassName 'Win32_EncryptableVolume' -Filter "DriveLetter='$osDrive'" -ErrorAction Stop
-} catch {
+}
+catch {
     $wmiAvailable = $false
 }
 
@@ -252,12 +487,29 @@ if (-not $wmiAvailable -or -not $encVol) {
     Write-Output '       BitLocker feature is not installed or the MOF file is not compiled.'
     $warnings.Add('Win32_EncryptableVolume WMI not available')
     $findings.Add([PSCustomObject]@{ Check = 'WMI Readiness'; Status = 'WARN'; Detail = 'Win32_EncryptableVolume not available. BitLocker feature may not be installed.' })
-} else {
+}
+else {
+    # Known BitLocker HRESULT codes from Win32_EncryptableVolume WMI provider.
+    # Translates non-zero return values into actionable diagnostic intelligence.
+    # Source: Microsoft WMI documentation for Win32_EncryptableVolume class.
+    $fveErrors = @{
+        '0x80310008' = @{ Name = 'FVE_E_NOT_ACTIVATED';                         Detail = 'Protection not activated on this volume.';                          Action = 'Expected on unencrypted drives. No action needed for fresh encryption.' }
+        '0x80310018' = @{ Name = 'FVE_E_TPM_NOT_OWNED';                         Detail = 'TPM present but not initialized or ownership not claimed by OS.';    Action = 'Run Initialize-Tpm or open tpm.msc to take ownership. See BL002 BLTpmHealth.' }
+        '0x80310048' = @{ Name = 'FVE_E_FIRMWARE_TYPE_NOT_SUPPORTED';            Detail = 'System booting in Legacy BIOS/CSM. BitLocker requires native UEFI.'; Action = 'Convert to native UEFI boot and disable CSM in BIOS/UEFI settings.' }
+        '0x8031004A' = @{ Name = 'FVE_E_NOT_ON_STACK';                          Detail = 'BitLocker system files or bdesvc filter driver missing/corrupt.';    Action = 'Run Windows Startup Repair (bootrec /fixboot). May need BitLocker feature reinstall.' }
+        '0x80310052' = @{ Name = 'FVE_E_BCD_APPLICATIONS_PATH_INCORRECT';       Detail = 'BCD paths point to wrong partition (cloning/imaging artifact).';     Action = 'Rebuild BCD: bcdboot C:\Windows /s S: /f UEFI' }
+        '0x80310059' = @{ Name = 'FVE_E_OVERLAPPED_UPDATE';                     Detail = 'Conflicting policy or active BitLocker operation in progress.';      Action = 'Wait for active operation. Check GPO: HKLM\SOFTWARE\Policies\Microsoft\FVE' }
+        '0x803100B6' = @{ Name = 'FVE_E_NO_PREBOOT_KEYBOARD_OR_WINRE_DETECTED'; Detail = 'No pre-boot keyboard AND no functional WinRE. Fatal on tablets.';    Action = 'Run reagentc /enable. On tablets, ensure keyboard or USB recovery available.' }
+        '0x80290107' = @{ Name = 'TPMAPI_E_INTERNAL_ERROR';                     Detail = 'Low-level TPM hardware/firmware crash during crypto operation.';     Action = 'Update BIOS/UEFI firmware. If persistent, CMOS clear + TPM re-init. See BL002.' }
+        '0x80072F9A' = @{ Name = 'MDM_POLICY_CONFLICT';                         Detail = 'Local GPO conflicts with Intune/MDM CSP BitLocker directives.';      Action = 'Review: HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\BitLocker' }
+    }
+
     # GetConversionStatus
     $convResult = $null
     try {
         $convResult = Invoke-CimMethod -InputObject $encVol -MethodName 'GetConversionStatus' -ErrorAction Stop
-    } catch { }
+    }
+    catch { }
 
     $wmiConvStatus = 'Unknown'
     $wmiPct = 'Unknown'
@@ -276,7 +528,8 @@ if (-not $wmiAvailable -or -not $encVol) {
         }
         if ($convStatusMap.ContainsKey([int]$convCode)) {
             $wmiConvStatus = $convStatusMap[[int]$convCode]
-        } else {
+        }
+        else {
             $wmiConvStatus = "Code $convCode"
         }
 
@@ -284,19 +537,30 @@ if (-not $wmiAvailable -or -not $encVol) {
             Write-Output "[OK]  ConversionStatus: $wmiConvStatus (code $convCode)"
             Write-Output '       Volume is fully decrypted and eligible for encryption.'
             $findings.Add([PSCustomObject]@{ Check = 'WMI ConversionStatus'; Status = 'OK'; Detail = "$wmiConvStatus (EncryptionPercentage: $wmiPct%)" })
-        } elseif ([int]$convCode -eq 1) {
+        }
+        elseif ([int]$convCode -eq 1) {
             Write-Output "[i]   ConversionStatus: $wmiConvStatus (code $convCode). Already encrypted."
             $findings.Add([PSCustomObject]@{ Check = 'WMI ConversionStatus'; Status = 'INFO'; Detail = "$wmiConvStatus. Volume is already encrypted." })
-        } else {
+        }
+        else {
             Write-Output "[!!]  ConversionStatus: $wmiConvStatus (code $convCode)"
             Write-Output "       EncryptionPercentage: $wmiPct%. Volume is in a transitional state."
             $blockers.Add("WMI ConversionStatus: $wmiConvStatus")
             $findings.Add([PSCustomObject]@{ Check = 'WMI ConversionStatus'; Status = 'ISSUE'; Detail = "$wmiConvStatus -- transitional state." })
         }
-    } else {
+    }
+    else {
         $retVal = if ($convResult) { "0x{0:X8}" -f $convResult.ReturnValue } else { 'N/A' }
         Write-Output "[!]   GetConversionStatus returned: $retVal"
-        Write-Output '       Could not determine volume conversion state via WMI.'
+        if ($retVal -ne 'N/A' -and $fveErrors.ContainsKey($retVal)) {
+            $errInfo = $fveErrors[$retVal]
+            Write-Output "       $($errInfo.Name): $($errInfo.Detail)"
+            Write-Output "       Fix: $($errInfo.Action)"
+        }
+        else {
+            Write-Output '       Could not determine volume conversion state via WMI.'
+            Write-Output '       Check BitLocker feature installation and WMI provider registration.'
+        }
         $warnings.Add("WMI GetConversionStatus returned $retVal")
         $findings.Add([PSCustomObject]@{ Check = 'WMI ConversionStatus'; Status = 'WARN'; Detail = "GetConversionStatus returned $retVal" })
     }
@@ -305,7 +569,8 @@ if (-not $wmiAvailable -or -not $encVol) {
     $protResult = $null
     try {
         $protResult = Invoke-CimMethod -InputObject $encVol -MethodName 'GetProtectionStatus' -ErrorAction Stop
-    } catch { }
+    }
+    catch { }
 
     if ($protResult -and $protResult.ReturnValue -eq 0) {
         $protCode = $protResult.ProtectionStatus
@@ -314,6 +579,17 @@ if (-not $wmiAvailable -or -not $encVol) {
 
         Write-Output "[i]   ProtectionStatus: $protLabel (code $protCode)"
         $findings.Add([PSCustomObject]@{ Check = 'WMI ProtectionStatus'; Status = 'INFO'; Detail = "$protLabel (code $protCode)" })
+    }
+    elseif ($protResult) {
+        $retVal = "0x{0:X8}" -f $protResult.ReturnValue
+        Write-Output "[!]   GetProtectionStatus returned: $retVal"
+        if ($fveErrors.ContainsKey($retVal)) {
+            $errInfo = $fveErrors[$retVal]
+            Write-Output "       $($errInfo.Name): $($errInfo.Detail)"
+            Write-Output "       Fix: $($errInfo.Action)"
+        }
+        $warnings.Add("WMI GetProtectionStatus returned $retVal")
+        $findings.Add([PSCustomObject]@{ Check = 'WMI ProtectionStatus'; Status = 'WARN'; Detail = "GetProtectionStatus returned $retVal" })
     }
 }
 
@@ -332,7 +608,8 @@ try {
     if ($LASTEXITCODE -ne 0 -and -not $bcdOutput) {
         $bcdAvailable = $false
     }
-} catch {
+}
+catch {
     $bcdAvailable = $false
 }
 
@@ -341,7 +618,8 @@ if (-not $bcdAvailable -or -not $bcdOutput) {
     Write-Output '       Cannot validate Boot Configuration Data integrity.'
     $warnings.Add('bcdedit not available or failed')
     $findings.Add([PSCustomObject]@{ Check = 'BCD Integrity'; Status = 'WARN'; Detail = 'bcdedit not available or failed.' })
-} else {
+}
+else {
     $bcdLines = @($bcdOutput | ForEach-Object { "$_" })
     $bcdIssues = 0
 
@@ -387,7 +665,8 @@ if (-not $bcdAvailable -or -not $bcdOutput) {
                     $blockers.Add('Boot Manager device is unknown -- BCD corrupted')
                     $bcdIssues++
                     $findings.Add([PSCustomObject]@{ Check = 'BCD Boot Manager device'; Status = 'ISSUE'; Detail = "Device: $bmDevice -- UNKNOWN volume." })
-                } else {
+                }
+                else {
                     Write-Output "[OK]  Boot Manager device: $bmDevice"
                     $findings.Add([PSCustomObject]@{ Check = 'BCD Boot Manager device'; Status = 'OK'; Detail = $bmDevice })
                 }
@@ -421,7 +700,8 @@ if (-not $bcdAvailable -or -not $bcdOutput) {
                         $blockers.Add("OS Loader device is unknown ($identifier)")
                         $bcdIssues++
                         $findings.Add([PSCustomObject]@{ Check = "BCD OS Loader device ($identifier)"; Status = 'ISSUE'; Detail = "Device: $osDevice -- UNKNOWN." })
-                    } else {
+                    }
+                    else {
                         Write-Output "[OK]  OS Loader ($identifier) device: $osDevice"
                         $findings.Add([PSCustomObject]@{ Check = "BCD OS Loader device ($identifier)"; Status = 'OK'; Detail = $osDevice })
                     }
@@ -434,7 +714,8 @@ if (-not $bcdAvailable -or -not $bcdOutput) {
                         $blockers.Add("OS Loader osdevice is unknown ($identifier)")
                         $bcdIssues++
                         $findings.Add([PSCustomObject]@{ Check = "BCD OS Loader osdevice ($identifier)"; Status = 'ISSUE'; Detail = "osdevice: $osOsDevice -- UNKNOWN." })
-                    } else {
+                    }
+                    else {
                         Write-Output "[OK]  OS Loader ($identifier) osdevice: $osOsDevice"
                         $findings.Add([PSCustomObject]@{ Check = "BCD OS Loader osdevice ($identifier)"; Status = 'OK'; Detail = $osOsDevice })
                     }
@@ -459,76 +740,73 @@ if (-not $bcdAvailable -or -not $bcdOutput) {
 Write-Output ''
 
 # ============================================================
-# Section 4: WinRE Health (reagentc /info)
+# Section 4: WinRE Health (ReAgent.xml -- L10N-safe)
 # ============================================================
 Write-Output '--- WinRE Health ---'
 
-$reOutput = $null
-$reAvailable = $true
+# Parse ReAgent.xml directly -- this is the source reagentc.exe reads from.
+# XML is structured and language-independent.
+$reAgentPath = Join-Path $env:WinDir 'System32\Recovery\ReAgent.xml'
+$reAgentXml = $null
 
-try {
-    $reOutput = & reagentc.exe /info 2>&1
-} catch {
-    $reAvailable = $false
+if (Test-Path $reAgentPath) {
+    try {
+        [xml]$reAgentXml = Get-Content -Path $reAgentPath -ErrorAction Stop
+    }
+    catch { }
 }
 
-if (-not $reAvailable -or -not $reOutput) {
-    Write-Output "[!]   reagentc.exe failed or is not available."
-    $warnings.Add('reagentc not available or failed')
-    $findings.Add([PSCustomObject]@{ Check = 'WinRE Health'; Status = 'WARN'; Detail = 'reagentc not available or failed.' })
-} else {
-    $reLines = @($reOutput | ForEach-Object { "$_" })
+if ($null -eq $reAgentXml) {
+    Write-Output '[!]   ReAgent.xml not found or could not be parsed.'
+    Write-Output '       WinRE configuration file missing. Recovery environment status unknown.'
+    $warnings.Add('ReAgent.xml not found or unreadable')
+    $findings.Add([PSCustomObject]@{ Check = 'WinRE Health'; Status = 'WARN'; Detail = 'ReAgent.xml not found or could not be parsed.' })
+}
+else {
+    # InstallState: state="1" = Enabled, state="0" = Disabled
+    $winreState = $reAgentXml.WindowsRE.InstallState.state
+    if ($winreState -eq '1') {
+        Write-Output '[OK]  WinRE Status: Enabled'
+        $findings.Add([PSCustomObject]@{ Check = 'WinRE Status'; Status = 'OK'; Detail = 'Enabled.' })
+    }
+    elseif ($winreState -eq '0') {
+        Write-Output '[!!]  WinRE Status: Disabled'
+        Write-Output '       WinRE is DISABLED. Silent encryption (Intune/MDM) CANNOT proceed without WinRE.'
+        Write-Output '       Remediation: reagentc /enable'
+        Write-Output '       If that fails, the WinRE partition may be too small (CVE-2024-20666 fallout).'
+        $blockers.Add('WinRE is Disabled -- silent encryption blocked')
+        $findings.Add([PSCustomObject]@{ Check = 'WinRE Status'; Status = 'ISSUE'; Detail = 'Disabled. Silent encryption blocked. Run reagentc /enable.' })
+    }
+    else {
+        Write-Output "[!]   WinRE Status: Unknown (InstallState = $winreState)"
+        $warnings.Add('Could not determine WinRE status')
+        $findings.Add([PSCustomObject]@{ Check = 'WinRE Status'; Status = 'WARN'; Detail = "Unknown InstallState value: $winreState" })
+    }
 
-    # Parse Windows RE status
-    $reStatus = Get-ParsedValue -Lines $reLines -Label 'Windows RE status'
-    if (-not $reStatus) {
-        # Try alternate label (localization can change this)
-        foreach ($line in $reLines) {
-            if ($line -match 'Enabled|Disabled') {
-                $reStatus = if ($line -match 'Enabled') { 'Enabled' } else { 'Disabled' }
-                break
+    # WinreLocation: path and partition info from XML
+    $winreLocNode = $reAgentXml.WindowsRE.WinreLocation
+    if ($winreLocNode) {
+        $winrePath = $winreLocNode.path
+        $winreGuid = $winreLocNode.guid
+        if (-not [string]::IsNullOrWhiteSpace($winrePath)) {
+            Write-Output "[OK]  WinRE Location: $winrePath"
+            if ($winreGuid) {
+                Write-Output "       Partition GUID: $winreGuid"
             }
+            $findings.Add([PSCustomObject]@{ Check = 'WinRE Location'; Status = 'OK'; Detail = $winrePath })
+        }
+        elseif ($winreState -eq '1') {
+            Write-Output '[!]   WinRE Location: empty despite WinRE being enabled.'
+            Write-Output '       WinRE image path may be missing or corrupted.'
+            $warnings.Add('WinRE location empty despite enabled status')
+            $findings.Add([PSCustomObject]@{ Check = 'WinRE Location'; Status = 'WARN'; Detail = 'Empty despite WinRE enabled.' })
         }
     }
 
-    if ($reStatus) {
-        if ($reStatus -match 'Enabled') {
-            Write-Output "[OK]  Windows RE status: $reStatus"
-            $findings.Add([PSCustomObject]@{ Check = 'WinRE Status'; Status = 'OK'; Detail = 'Enabled.' })
-        } else {
-            Write-Output "[!!]  Windows RE status: $reStatus"
-            Write-Output '       WinRE is DISABLED. Silent encryption (Intune/MDM) CANNOT proceed without WinRE.'
-            Write-Output '       Remediation: reagentc /enable'
-            Write-Output '       If that fails, the WinRE partition may be too small (CVE-2024-20666 fallout).'
-            $blockers.Add('WinRE is Disabled -- silent encryption blocked')
-            $findings.Add([PSCustomObject]@{ Check = 'WinRE Status'; Status = 'ISSUE'; Detail = 'Disabled. Silent encryption blocked. Run reagentc /enable.' })
-        }
-    } else {
-        Write-Output "[!]   Could not parse Windows RE status."
-        $warnings.Add('Could not parse WinRE status')
-        $findings.Add([PSCustomObject]@{ Check = 'WinRE Status'; Status = 'WARN'; Detail = 'Could not parse status from reagentc output.' })
-    }
-
-    # Parse Windows RE location
-    $reLocation = Get-ParsedValue -Lines $reLines -Label 'Windows RE location'
-    if ($reLocation) {
-        if ($reLocation -match '\\\\[?]\\\\GLOBALROOT' -or $reLocation -match 'harddisk\d+\\\\partition\d+') {
-            Write-Output "[OK]  Windows RE location: $reLocation"
-            $findings.Add([PSCustomObject]@{ Check = 'WinRE Location'; Status = 'OK'; Detail = $reLocation })
-        } elseif ($reLocation.Trim() -eq '' -or $reLocation -match 'not found|unavailable') {
-            Write-Output "[!!]  Windows RE location: (empty or not found)"
-            Write-Output '       WinRE image may be missing or corrupted.'
-            $blockers.Add('WinRE location is empty or not found')
-            $findings.Add([PSCustomObject]@{ Check = 'WinRE Location'; Status = 'ISSUE'; Detail = 'Empty or not found. WinRE image may be missing.' })
-        } else {
-            Write-Output "[i]   Windows RE location: $reLocation"
-            $findings.Add([PSCustomObject]@{ Check = 'WinRE Location'; Status = 'INFO'; Detail = $reLocation })
-        }
-    }
-
-    # Parse BCD identifier
-    $reBcdId = Get-ParsedValue -Lines $reLines -Label 'BCD identifier'
-    if ($reBcdId) {
+    # WinreBCD: BCD identifier from XML
+    $winreBcdNode = $reAgentXml.WindowsRE.WinreBCD
+    if ($winreBcdNode) {
+        $reBcdId = $winreBcdNode.id
         if ($reBcdId -match '\{00000000-0000-0000-0000-000000000000\}') {
             Write-Output "[!!]  BCD identifier: $reBcdId"
             Write-Output '       NULL GUID detected. Severe BCD-to-WinRE linkage failure.'
@@ -536,10 +814,12 @@ if (-not $reAvailable -or -not $reOutput) {
             Write-Output '       Remediation: reagentc /setreimage /path <WinRE_path> then reagentc /enable'
             $blockers.Add('WinRE BCD identifier is null GUID -- severe linkage break')
             $findings.Add([PSCustomObject]@{ Check = 'WinRE BCD ID'; Status = 'ISSUE'; Detail = 'NULL GUID. Severe BCD/WinRE linkage failure.' })
-        } elseif ($reBcdId -match '\{[0-9a-fA-F-]+\}') {
+        }
+        elseif ($reBcdId -match '\{[0-9a-fA-F-]+\}') {
             Write-Output "[OK]  BCD identifier: $reBcdId (valid)"
             $findings.Add([PSCustomObject]@{ Check = 'WinRE BCD ID'; Status = 'OK'; Detail = "$reBcdId (valid)" })
-        } else {
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($reBcdId)) {
             Write-Output "[!]   BCD identifier: $reBcdId (unexpected format)"
             $warnings.Add("WinRE BCD identifier unexpected: $reBcdId")
             $findings.Add([PSCustomObject]@{ Check = 'WinRE BCD ID'; Status = 'WARN'; Detail = "$reBcdId (unexpected format)" })
@@ -559,14 +839,16 @@ $pcrOutput = $null
 if ($manageBdeAvailable) {
     try {
         $pcrOutput = & manage-bde.exe -protectors -get $osDrive 2>&1
-    } catch { }
+    }
+    catch { }
 }
 
 if (-not $pcrOutput) {
     Write-Output "[i]   manage-bde -protectors -get not available or returned no output."
     Write-Output '       PCR validation profile cannot be assessed.'
     $findings.Add([PSCustomObject]@{ Check = 'PCR Validation'; Status = 'INFO'; Detail = 'manage-bde protectors output not available.' })
-} else {
+}
+else {
     $pcrLines = @($pcrOutput | ForEach-Object { "$_" })
 
     # Look for TPM protector block and PCR Validation Profile
@@ -598,7 +880,8 @@ if (-not $pcrOutput) {
         Write-Output '       This is expected if the volume is not yet encrypted.'
         Write-Output '       PCR binding will be established when encryption begins.'
         $findings.Add([PSCustomObject]@{ Check = 'PCR Validation'; Status = 'INFO'; Detail = 'No TPM protector found. Expected if volume is not encrypted.' })
-    } elseif ($pcrProfile) {
+    }
+    elseif ($pcrProfile) {
         # Analyze PCR profile
         $pcrNumbers = @($pcrProfile -replace '[^0-9,\s]', '' -split '[,\s]+' | Where-Object { $_ -ne '' } | ForEach-Object { [int]$_ })
 
@@ -610,7 +893,8 @@ if (-not $pcrOutput) {
             Write-Output '       Ideal binding: PCR 7 (Secure Boot) + PCR 11 (BitLocker Access Control).'
             Write-Output '       Firmware updates will NOT trigger recovery key prompts.'
             $findings.Add([PSCustomObject]@{ Check = 'PCR Validation'; Status = 'OK'; Detail = "$pcrProfile -- ideal Secure Boot binding." })
-        } elseif ($isDegraded) {
+        }
+        elseif ($isDegraded) {
             Write-Output "[!!]  PCR Validation Profile: $pcrProfile"
             Write-Output '       DEGRADED LEGACY PROFILE: PCR 0,2,4,11 detected.'
             Write-Output '       The system fell back to legacy PCR measurements instead of PCR 7 (Secure Boot).'
@@ -620,12 +904,14 @@ if (-not $pcrOutput) {
             Write-Output '       This is NOT fixable from the OS -- requires BIOS/vendor action.'
             $warnings.Add('Degraded PCR profile (0,2,4,11) -- OROM fallback detected')
             $findings.Add([PSCustomObject]@{ Check = 'PCR Validation'; Status = 'WARN'; Detail = "$pcrProfile -- degraded legacy profile. OROM interference likely." })
-        } else {
+        }
+        else {
             Write-Output "[i]   PCR Validation Profile: $pcrProfile"
             Write-Output '       Custom or non-standard PCR binding detected.'
             $findings.Add([PSCustomObject]@{ Check = 'PCR Validation'; Status = 'INFO'; Detail = "$pcrProfile -- non-standard profile." })
         }
-    } else {
+    }
+    else {
         Write-Output "[i]   TPM protector found but no PCR Validation Profile line detected."
         $findings.Add([PSCustomObject]@{ Check = 'PCR Validation'; Status = 'INFO'; Detail = 'TPM protector present but PCR profile not found in output.' })
     }
@@ -643,10 +929,12 @@ $warningCount = $warnings.Count
 
 if ($blockerCount -eq 0 -and $warningCount -eq 0) {
     Write-Output 'RESULT: READY FOR ENCRYPTION. No blocking conditions detected.'
-} elseif ($blockerCount -eq 0 -and $warningCount -gt 0) {
+}
+elseif ($blockerCount -eq 0 -and $warningCount -gt 0) {
     Write-Output "RESULT: CONDITIONALLY READY. $warningCount warning(s) found but no hard blockers."
     Write-Output '        Review warnings above before proceeding with encryption.'
-} else {
+}
+else {
     Write-Output "RESULT: NOT READY. $blockerCount blocker(s) and $warningCount warning(s) detected."
     Write-Output '        Address the issues marked [!!] above before attempting encryption.'
     Write-Output ''
@@ -674,3 +962,4 @@ Write-Output '        If hardware prerequisites  -> run BL003 BLHardwarePrereqs'
 Write-Output '        If policy issues           -> run BL006 BLPolicyConflict'
 Write-Output '        If all checks pass         -> system is ready for encryption'
 Write-Output ''
+

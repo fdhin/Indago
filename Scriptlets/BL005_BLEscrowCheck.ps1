@@ -8,7 +8,7 @@ Write-Output '=== Recovery Key Escrow Diagnostics ==='
 Write-Output ''
 
 $issueCount = 0
-$warnCount  = 0
+$warnCount = 0
 
 # ---------------------------------------------------------------
 # Check 1: Escrow Policy Requirements
@@ -21,7 +21,8 @@ $osRequireBackup = $null
 try {
     $fveItem = Get-ItemProperty -Path $fvePath -Name 'OSRequireActiveDirectoryBackup' -ErrorAction Stop
     if ($null -ne $fveItem) { $osRequireBackup = $fveItem.OSRequireActiveDirectoryBackup }
-} catch { }
+}
+catch { }
 
 $escrowGateActive = $false
 if ($null -ne $osRequireBackup -and $osRequireBackup -eq 1) {
@@ -29,10 +30,12 @@ if ($null -ne $osRequireBackup -and $osRequireBackup -eq 1) {
     Write-Output '[i]   Escrow Policy: OSRequireActiveDirectoryBackup = 1'
     Write-Output '       Encryption will NOT begin until the recovery key is backed up to AD/AAD.'
     Write-Output '       If escrow fails, encryption is blocked indefinitely.'
-} elseif ($null -ne $osRequireBackup -and $osRequireBackup -eq 0) {
+}
+elseif ($null -ne $osRequireBackup -and $osRequireBackup -eq 0) {
     Write-Output '[OK]  Escrow Policy: OSRequireActiveDirectoryBackup = 0'
     Write-Output '       Backup not required for encryption to proceed. Encryption can start without escrow.'
-} else {
+}
+else {
     Write-Output '[OK]  Escrow Policy: OSRequireActiveDirectoryBackup'
     Write-Output '       Not set. Default behavior -- encryption can proceed without mandatory backup.'
 }
@@ -42,7 +45,8 @@ $fdvRequireBackup = $null
 try {
     $fveItem2 = Get-ItemProperty -Path $fvePath -Name 'FDVRequireActiveDirectoryBackup' -ErrorAction Stop
     if ($null -ne $fveItem2) { $fdvRequireBackup = $fveItem2.FDVRequireActiveDirectoryBackup }
-} catch { }
+}
+catch { }
 
 if ($null -ne $fdvRequireBackup -and $fdvRequireBackup -eq 1) {
     Write-Output '[i]   Fixed Data Volumes: FDVRequireActiveDirectoryBackup = 1'
@@ -54,7 +58,8 @@ $infoToStore = $null
 try {
     $fveItem3 = Get-ItemProperty -Path $fvePath -Name 'OSActiveDirectoryInfoToStore' -ErrorAction Stop
     if ($null -ne $fveItem3) { $infoToStore = $fveItem3.OSActiveDirectoryInfoToStore }
-} catch { }
+}
+catch { }
 
 if ($null -ne $infoToStore) {
     $storeDesc = switch ([int]$infoToStore) {
@@ -78,14 +83,16 @@ try {
     $dsregOutput = & dsregcmd.exe /status 2>&1 | Out-String
     # Strip ANSI/VT escape sequences -- dsregcmd on Win 11 emits VT codes that clear the console
     if ($dsregOutput) { $dsregOutput = $dsregOutput -replace '\x1b\[[0-9;]*[a-zA-Z]', '' }
-} catch { }
+}
+catch { }
 
 if ([string]::IsNullOrEmpty($dsregOutput)) {
     Write-Output '[!!]  dsregcmd.exe /status'
     Write-Output '       Failed to execute dsregcmd or no output returned.'
     Write-Output '       Cannot validate device identity for escrow.'
     $issueCount++
-} else {
+}
+else {
     # Parse relevant fields
     $azureAdJoined = $null
     $azureAdPrt = $null
@@ -108,12 +115,14 @@ if ([string]::IsNullOrEmpty($dsregOutput)) {
     if ($azureAdJoined -eq 'YES') {
         Write-Output '[OK]  AzureAdJoined: YES'
         Write-Output '       Device is joined to Entra ID. Cloud escrow is structurally possible.'
-    } elseif ($azureAdJoined -eq 'NO') {
+    }
+    elseif ($azureAdJoined -eq 'NO') {
         Write-Output '[!!]  AzureAdJoined: NO'
         Write-Output '       Device is NOT joined to Entra ID. Cloud escrow to AAD is impossible.'
         Write-Output '       The device must be Entra ID joined or Hybrid joined for AAD escrow.'
         $issueCount++
-    } else {
+    }
+    else {
         Write-Output '[!]   AzureAdJoined: Could not determine'
         Write-Output '       dsregcmd did not return AzureAdJoined field.'
         $warnCount++
@@ -123,13 +132,15 @@ if ([string]::IsNullOrEmpty($dsregOutput)) {
     if ($azureAdPrt -eq 'YES') {
         Write-Output '[OK]  AzureAdPrt: YES'
         Write-Output '       Primary Refresh Token is present. Background auth to AAD will work.'
-    } elseif ($azureAdPrt -eq 'NO') {
+    }
+    elseif ($azureAdPrt -eq 'NO') {
         Write-Output '[!!]  AzureAdPrt: NO'
         Write-Output '       Primary Refresh Token is MISSING. Background authentication to AAD'
         Write-Output '       will fail. Escrow transmissions will be rejected by the cloud STS.'
         Write-Output '       Try: dsregcmd /refreshprt or sign out and back in.'
         $issueCount++
-    } else {
+    }
+    else {
         Write-Output '[i]   AzureAdPrt: Not found in dsregcmd output'
         Write-Output '       PRT status could not be determined. May require a user to be signed in.'
     }
@@ -139,14 +150,16 @@ if ([string]::IsNullOrEmpty($dsregOutput)) {
         if ($deviceAuthStatus -match 'SUCCESS') {
             Write-Output '[OK]  DeviceAuthStatus: SUCCESS'
             Write-Output '       Device can authenticate to Entra ID. Identity is healthy.'
-        } elseif ($deviceAuthStatus -match 'FAILED') {
+        }
+        elseif ($deviceAuthStatus -match 'FAILED') {
             Write-Output '[!!]  DeviceAuthStatus: FAILED -- ZOMBIE STATE DETECTED'
             Write-Output "       Status: $deviceAuthStatus"
             Write-Output '       The device believes it is Entra joined, but its tokens are rejected.'
             Write-Output '       Escrow will fail because the cloud rejects this device identity.'
             Write-Output '       Fix: Run dsregcmd /leave then dsregcmd /join to re-establish trust.'
             $issueCount++
-        } else {
+        }
+        else {
             Write-Output "[i]   DeviceAuthStatus: $deviceAuthStatus"
         }
     }
@@ -155,7 +168,8 @@ if ([string]::IsNullOrEmpty($dsregOutput)) {
     if ($tpmProtected -eq 'YES') {
         Write-Output '[OK]  TpmProtected: YES'
         Write-Output '       Device identity key is stored in hardware TPM. Secure.'
-    } elseif ($tpmProtected -eq 'NO') {
+    }
+    elseif ($tpmProtected -eq 'NO') {
         Write-Output '[!]   TpmProtected: NO'
         Write-Output '       Device identity key is software-backed, not in TPM.'
         Write-Output '       Some conditional access policies may reject software-backed keys.'
@@ -197,7 +211,8 @@ try {
         StartTime = $startTime
     }
     $escrowEvents = @(Get-WinEvent -FilterHashtable $filter -ErrorAction Stop)
-} catch {
+}
+catch {
     if ($_.Exception.Message -match 'No events were found') {
         $escrowEvents = @()
     }
@@ -207,13 +222,15 @@ if ($null -eq $escrowEvents) {
     Write-Output '[i]   Escrow Events'
     Write-Output '       Could not query BitLocker Management event log.'
     Write-Output '       The log may not exist or may be inaccessible.'
-} elseif ($escrowEvents.Count -eq 0) {
+}
+elseif ($escrowEvents.Count -eq 0) {
     Write-Output '[i]   Escrow Events: None found in the last 7 days'
     Write-Output '       No escrow success, failure, or rollback events detected.'
     Write-Output '       Escrow may never have been attempted on this machine.'
-} else {
+}
+else {
     $successes = @($escrowEvents | Where-Object { $_.Id -eq 845 })
-    $failures  = @($escrowEvents | Where-Object { $_.Id -eq 846 })
+    $failures = @($escrowEvents | Where-Object { $_.Id -eq 846 })
     $silentFail = @($escrowEvents | Where-Object { $_.Id -eq 851 })
     $rotationFail = @($escrowEvents | Where-Object { $_.Id -eq 858 })
     $rollbacks = @($escrowEvents | Where-Object { $_.Id -eq 778 })
@@ -310,14 +327,14 @@ Write-Output ''
 Write-Output '--- Escrow Endpoint Connectivity ---'
 
 $endpoints = @(
-    @('login.microsoftonline.com',           'OAuth token acquisition for escrow authentication'),
-    @('enterpriseregistration.windows.net',   'Device Registration Service -- accepts the key payload'),
-    @('device.login.microsoftonline.com',     'Device identity verification and compliance checks')
+    @('login.microsoftonline.com', 'OAuth token acquisition for escrow authentication'),
+    @('enterpriseregistration.windows.net', 'Device Registration Service -- accepts the key payload'),
+    @('device.login.microsoftonline.com', 'Device identity verification and compliance checks')
 )
 
 foreach ($ep in $endpoints) {
     $hostname = $ep[0]
-    $purpose  = $ep[1]
+    $purpose = $ep[1]
 
     $result = $null
     try {
@@ -327,18 +344,21 @@ foreach ($ep in $endpoints) {
         if ($waited -and $result.Connected) {
             Write-Output "[OK]  ${hostname}:443 -- Reachable"
             Write-Output "       $purpose"
-        } else {
+        }
+        else {
             Write-Output "[!!]  ${hostname}:443 -- UNREACHABLE (timeout)"
             Write-Output "       $purpose"
             Write-Output '       Escrow transmissions to this endpoint will fail from SYSTEM context.'
             $issueCount++
         }
-    } catch {
+    }
+    catch {
         Write-Output "[!!]  ${hostname}:443 -- UNREACHABLE (error)"
         Write-Output "       $purpose"
         Write-Output "       Error: $($_.Exception.Message)"
         $issueCount++
-    } finally {
+    }
+    finally {
         if ($null -ne $result) {
             try { $result.Close() } catch { }
         }
@@ -358,18 +378,21 @@ if ([string]::IsNullOrEmpty($osDrive)) { $osDrive = 'C:' }
 $blVolume = $null
 try {
     $blVolume = Get-BitLockerVolume -MountPoint $osDrive -ErrorAction Stop
-} catch { }
+}
+catch { }
 
 if ($null -eq $blVolume) {
     Write-Output "[i]   Recovery Key Protectors ($osDrive)"
     Write-Output '       Could not query BitLocker volume. BitLocker may not be available or'
     Write-Output '       the drive is not encrypted. Key protector analysis skipped.'
-} else {
+}
+else {
     $volStatus = "$($blVolume.VolumeStatus)"
     if ($volStatus -eq 'FullyDecrypted') {
         Write-Output "[i]   Volume $osDrive is not encrypted"
         Write-Output '       Key protectors are not applicable. Encryption has not been enabled.'
-    } else {
+    }
+    else {
         $protectors = @($blVolume.KeyProtector)
         $recoveryKeys = @($protectors | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' })
         $otherTypes = @($protectors | Where-Object { $_.KeyProtectorType -ne 'RecoveryPassword' })
@@ -382,7 +405,8 @@ if ($null -eq $blVolume) {
             Write-Output '       There is no recovery key to escrow. BitLocker cannot back up'
             Write-Output '       a key that does not exist. A new recovery key must be generated.'
             $issueCount++
-        } else {
+        }
+        else {
             # Cross-reference each recovery key GUID with Event 845
             $event845Msgs = @()
             if ($null -ne $escrowEvents) {
@@ -411,7 +435,8 @@ if ($null -eq $blVolume) {
                 if ($escrowed) {
                     Write-Output "[OK]  RecoveryPassword $guidClean"
                     Write-Output '       Escrow confirmed -- Event 845 found for this key protector.'
-                } else {
+                }
+                else {
                     Write-Output "[!]   RecoveryPassword $guidClean"
                     Write-Output '       No escrow confirmation found in last 7 days for this key.'
                     Write-Output '       The key may have been escrowed earlier, or escrow may not have'
@@ -426,44 +451,46 @@ if ($null -eq $blVolume) {
 Write-Output ''
 
 # ---------------------------------------------------------------
-# Check 6: WinRE Status (Lightweight)
+# Check 6: WinRE Status (ReAgent.xml -- L10N-safe)
 # ---------------------------------------------------------------
 Write-Output '--- WinRE Status ---'
 
-$reagentOutput = $null
-try {
-    $reagentOutput = & reagentc.exe /info 2>&1 | Out-String
-} catch { }
+# Parse ReAgent.xml directly -- this is the source reagentc.exe reads from.
+# XML is structured and language-independent.
+$reAgentPath = Join-Path $env:WinDir 'System32\Recovery\ReAgent.xml'
+$winreState = $null
 
-if ([string]::IsNullOrEmpty($reagentOutput)) {
-    Write-Output '[!]   WinRE Status: Could not query'
-    Write-Output '       reagentc.exe did not return output. WinRE status unknown.'
+if (Test-Path $reAgentPath) {
+    try {
+        [xml]$reAgentXml = Get-Content -Path $reAgentPath -ErrorAction Stop
+        $winreState = $reAgentXml.WindowsRE.InstallState.state
+    }
+    catch { }
+}
+
+if ($null -eq $winreState) {
+    Write-Output '[!]   WinRE Status: Could not determine'
+    Write-Output '       ReAgent.xml not found or could not be parsed.'
     Write-Output '       WinRE is required for silent encryption and key rotation.'
     $warnCount++
-} else {
-    $winreEnabled = $false
-    foreach ($line in $reagentOutput -split "`n") {
-        $trimmed = $line.Trim()
-        if ($trimmed -match 'Windows RE status.*Enabled' -or $trimmed -match 'Windows RE.*Enabled') {
-            $winreEnabled = $true
-        }
-        if ($trimmed -match 'Windows RE status.*Disabled' -or $trimmed -match 'Windows RE.*Disabled') {
-            $winreEnabled = $false
-        }
-    }
-
-    if ($winreEnabled) {
-        Write-Output '[OK]  WinRE: Enabled'
-        Write-Output '       Windows Recovery Environment is active. Silent encryption and'
-        Write-Output '       key rotation prerequisites are met.'
-    } else {
-        Write-Output '[!!]  WinRE: Disabled or Not Configured'
-        Write-Output '       Silent encryption will fail (Event 854) because the OS cannot'
-        Write-Output '       guarantee a recovery pathway. Key rotation (Event 858) will also fail.'
-        Write-Output '       Fix: reagentc /enable (may require WinRE image at C:\Recovery\WindowsRE).'
-        Write-Output '       For deeper analysis, run BL008 BLReadinessCheck.'
-        $issueCount++
-    }
+}
+elseif ($winreState -eq '1') {
+    Write-Output '[OK]  WinRE: Enabled'
+    Write-Output '       Windows Recovery Environment is active. Silent encryption and'
+    Write-Output '       key rotation prerequisites are met.'
+}
+elseif ($winreState -eq '0') {
+    Write-Output '[!!]  WinRE: Disabled'
+    Write-Output '       Silent encryption will fail (Event 854) because the OS cannot'
+    Write-Output '       guarantee a recovery pathway. Key rotation (Event 858) will also fail.'
+    Write-Output '       Fix: reagentc /enable (may require WinRE image at C:\Recovery\WindowsRE).'
+    Write-Output '       For deeper analysis, run BL008 BLReadinessCheck.'
+    $issueCount++
+}
+else {
+    Write-Output "[!]   WinRE: Unknown state (InstallState = $winreState)"
+    Write-Output '       Could not determine WinRE state. Run BL008 BLReadinessCheck for details.'
+    $warnCount++
 }
 
 Write-Output ''
@@ -474,11 +501,14 @@ Write-Output ''
 $totalProblems = $issueCount + $warnCount
 if ($totalProblems -eq 0) {
     Write-Output 'RESULT: No escrow issues detected. Recovery key pipeline appears healthy.'
-} elseif ($issueCount -gt 0 -and $warnCount -gt 0) {
+}
+elseif ($issueCount -gt 0 -and $warnCount -gt 0) {
     Write-Output "RESULT: $issueCount issue(s) and $warnCount warning(s) found. Review items above."
-} elseif ($issueCount -gt 0) {
+}
+elseif ($issueCount -gt 0) {
     Write-Output "RESULT: $issueCount issue(s) found. Review items marked [!!] above."
-} else {
+}
+else {
     Write-Output "RESULT: $warnCount warning(s) found. Review items marked [!] above."
 }
 
