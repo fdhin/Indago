@@ -23,7 +23,13 @@ function Get-ParsedValue {
     param([string[]]$Lines, [string]$Label)
     foreach ($line in $Lines) {
         $trimmed = $line.Trim()
-        if ($trimmed -match "^${Label}\s*[:](.+)$") {
+        # manage-bde uses colons:  "Conversion Status:    Fully Decrypted"
+        # bcdedit uses whitespace: "device                  partition=..."
+        # Try colon format first, then fall back to 2+ whitespace separator.
+        if ($trimmed -match "^${Label}\s*[:]\s*(.+)$") {
+            return $Matches[1].Trim()
+        }
+        if ($trimmed -match "^${Label}\s{2,}(.+)$") {
             return $Matches[1].Trim()
         }
     }
@@ -339,137 +345,39 @@ if (-not $fdeDetected) {
 
 Write-Output ''
 
+# # ============================================================
+# Section 1: BitLocker Feature Gate (manage-bde availability)
 # ============================================================
-# Section 1: Volume State Assessment (manage-bde -status)
-# ============================================================
-Write-Output '--- Volume State (manage-bde -status) ---'
+Write-Output '--- BitLocker Feature Gate ---'
 
 $manageBdeAvailable = $true
-$bdeOutput = $null
 
 try {
-    $bdeOutput = & manage-bde.exe -status $osDrive 2>&1
-    if ($LASTEXITCODE -ne 0 -and -not $bdeOutput) {
-        $manageBdeAvailable = $false
-    }
+    $null = Get-Command -Name 'manage-bde.exe' -ErrorAction Stop
 }
 catch {
     $manageBdeAvailable = $false
 }
 
-if (-not $manageBdeAvailable -or -not $bdeOutput) {
-    Write-Output "[!!]  manage-bde.exe is not available or failed to execute."
-    Write-Output "       BitLocker feature may not be installed on this system."
+if (-not $manageBdeAvailable) {
+    Write-Output '[!!]  manage-bde.exe is not available.'
+    Write-Output '       BitLocker feature may not be installed on this system.'
     $blockers.Add('manage-bde.exe not available')
-    $findings.Add([PSCustomObject]@{ Check = 'manage-bde availability'; Status = 'ISSUE'; Detail = 'manage-bde.exe not available or returned no output.' })
+    $findings.Add([PSCustomObject]@{ Check = 'manage-bde availability'; Status = 'ISSUE'; Detail = 'manage-bde.exe not available.' })
 }
 else {
-    $bdeLines = @($bdeOutput | ForEach-Object { "$_" })
-
-    # Parse Conversion Status
-    $conversionStatus = Get-ParsedValue -Lines $bdeLines -Label 'Conversion Status'
-    if ($conversionStatus) {
-        if ($conversionStatus -match 'Fully Decrypted') {
-            Write-Output "[OK]  Conversion Status: $conversionStatus"
-            Write-Output "       Volume is eligible for new encryption."
-            $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'OK'; Detail = "$conversionStatus -- eligible for encryption." })
-        }
-        elseif ($conversionStatus -match 'Fully Encrypted') {
-            # Check for ghost state (encrypted + protection off)
-            $protStatus = Get-ParsedValue -Lines $bdeLines -Label 'Protection Status'
-            if ($protStatus -and $protStatus -match 'Off') {
-                Write-Output "[!!]  Conversion Status: $conversionStatus / Protection: Off"
-                Write-Output '       GHOST STATE DETECTED: Volume appears encrypted but FVEK is stored in the clear.'
-                Write-Output '       This is the "Waiting for Activation" state. Data is NOT protected.'
-                Write-Output '       Remediation: manage-bde -off C: to fully decrypt, then re-encrypt cleanly.'
-                $blockers.Add('Ghost state: FullyEncrypted with Protection Off (Waiting for Activation)')
-                $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'ISSUE'; Detail = 'GHOST STATE: FullyEncrypted + Protection Off. Remediate with manage-bde -off.' })
-            }
-            else {
-                Write-Output "[i]   Conversion Status: $conversionStatus / Protection: $protStatus"
-                Write-Output '       Volume is already encrypted and protected. No action needed.'
-                $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'INFO'; Detail = "Already encrypted. Protection: $protStatus." })
-            }
-        }
-        elseif ($conversionStatus -match 'Encryption in Progress|Decryption in Progress') {
-            Write-Output "[!!]  Conversion Status: $conversionStatus"
-            Write-Output '       Volume is currently undergoing a conversion operation.'
-            Write-Output '       Cannot start a new encryption while another is in progress.'
-            $blockers.Add("Active conversion: $conversionStatus")
-            $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'ISSUE'; Detail = "$conversionStatus -- cannot start new encryption." })
-        }
-        else {
-            Write-Output "[!]   Conversion Status: $conversionStatus"
-            Write-Output "       Unexpected conversion status. Investigate with BL001 BLStatusSnapshot."
-            $warnings.Add("Unexpected conversion status: $conversionStatus")
-            $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'WARN'; Detail = "Unexpected: $conversionStatus" })
-        }
-    }
-    else {
-        Write-Output "[!]   Could not parse Conversion Status from manage-bde output."
-        $warnings.Add('Could not parse Conversion Status')
-        $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'WARN'; Detail = 'Could not parse from manage-bde output.' })
-    }
-
-    # Parse Percentage Encrypted
-    $pctEncrypted = Get-ParsedValue -Lines $bdeLines -Label 'Percentage Encrypted'
-    if ($pctEncrypted) {
-        $pctVal = $pctEncrypted -replace '[^0-9.]', ''
-        if ($pctVal -and [double]$pctVal -gt 0 -and [double]$pctVal -lt 100) {
-            Write-Output "[!!]  Percentage Encrypted: $pctEncrypted"
-            Write-Output "       Partial encryption detected. Volume is in an incomplete state."
-            $blockers.Add("Partial encryption: $pctEncrypted")
-            $findings.Add([PSCustomObject]@{ Check = 'Percentage Encrypted'; Status = 'ISSUE'; Detail = "Partial: $pctEncrypted" })
-        }
-    }
-
-    # Parse Encryption Method
-    $encMethod = Get-ParsedValue -Lines $bdeLines -Label 'Encryption Method'
-    if ($encMethod -and $encMethod -notmatch 'None') {
-        if ($conversionStatus -and $conversionStatus -match 'Fully Decrypted') {
-            Write-Output "[!]   Encryption Method: $encMethod (on a FullyDecrypted volume)"
-            Write-Output '       Residual crypto metadata present. May be from a previous encryption attempt.'
-            $warnings.Add("Residual encryption method: $encMethod on decrypted volume")
-            $findings.Add([PSCustomObject]@{ Check = 'Encryption Method'; Status = 'WARN'; Detail = "Residual metadata: $encMethod on decrypted volume." })
-        }
-        else {
-            Write-Output "[i]   Encryption Method: $encMethod"
-            $findings.Add([PSCustomObject]@{ Check = 'Encryption Method'; Status = 'INFO'; Detail = $encMethod })
-        }
-    }
-
-    # Parse Key Protectors section
-    $kpSection = $false
-    $kpCount = 0
-    foreach ($line in $bdeLines) {
-        if ($line -match 'Key Protectors') { $kpSection = $true; continue }
-        if ($kpSection -and $line.Trim() -match '^(TPM|Numerical Password|External Key|Recovery Password|Startup Key|Password|Certificate)') {
-            $kpCount++
-        }
-    }
-
-    if ($kpCount -gt 0 -and $conversionStatus -and $conversionStatus -match 'Fully Decrypted') {
-        Write-Output "[!!]  Key Protectors: $kpCount protector(s) found on a FullyDecrypted volume."
-        Write-Output '       Orphaned protectors may block fresh encryption. Remove with manage-bde -protectors -delete.'
-        $blockers.Add("$kpCount orphaned key protector(s) on decrypted volume")
-        $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'ISSUE'; Detail = "$kpCount orphaned protector(s) on FullyDecrypted volume." })
-    }
-    elseif ($kpCount -eq 0 -and $conversionStatus -and $conversionStatus -match 'Fully Decrypted') {
-        Write-Output "[OK]  No key protectors found. Clean slate for fresh encryption."
-        $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'OK'; Detail = 'No protectors on decrypted volume. Clean slate.' })
-    }
-    elseif ($kpCount -gt 0) {
-        Write-Output "[i]   Key Protectors: $kpCount protector(s) found."
-        $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'INFO'; Detail = "$kpCount protector(s) present." })
-    }
+    Write-Output '[OK]  manage-bde.exe is available. BitLocker feature is installed.'
+    $findings.Add([PSCustomObject]@{ Check = 'manage-bde availability'; Status = 'OK'; Detail = 'Present.' })
 }
 
 Write-Output ''
 
 # ============================================================
-# Section 2: WMI Encryption Readiness (Win32_EncryptableVolume)
+# Section 2: Volume State via WMI (Win32_EncryptableVolume)
+# All data extraction uses WMI numeric return codes which are
+# never localized -- unlike manage-bde text output.
 # ============================================================
-Write-Output '--- WMI Readiness (Win32_EncryptableVolume) ---'
+Write-Output '--- Volume State (Win32_EncryptableVolume) ---'
 
 $wmiAvailable = $true
 $encVol = $null
@@ -482,16 +390,128 @@ catch {
 }
 
 if (-not $wmiAvailable -or -not $encVol) {
-    Write-Output "[!]   Win32_EncryptableVolume WMI class not available for $osDrive."
-    Write-Output '       The BitLocker WMI provider may not be registered. This can happen if the'
-    Write-Output '       BitLocker feature is not installed or the MOF file is not compiled.'
-    $warnings.Add('Win32_EncryptableVolume WMI not available')
-    $findings.Add([PSCustomObject]@{ Check = 'WMI Readiness'; Status = 'WARN'; Detail = 'Win32_EncryptableVolume not available. BitLocker feature may not be installed.' })
+    # Fallback: Get-BitLockerVolume returns structured objects (enum values, not text).
+    # Available when the BitLocker PowerShell module is installed, even if the
+    # WMI provider is not registered. Fully L10N-safe.
+    $blvFallback = $null
+    try {
+        $blvFallback = Get-BitLockerVolume -MountPoint $osDrive -ErrorAction Stop
+    }
+    catch { }
+
+    if ($blvFallback) {
+        Write-Output '[i]   WMI provider not available. Using Get-BitLockerVolume fallback.'
+
+        # Conversion Status from VolumeStatus enum
+        $wmiConvCode = -1
+        $volStatus = [string]$blvFallback.VolumeStatus
+        $volStatusToCode = @{
+            'FullyDecrypted'       = 0
+            'FullyEncrypted'       = 1
+            'EncryptionInProgress' = 2
+            'DecryptionInProgress' = 3
+            'EncryptionPaused'     = 4
+            'DecryptionPaused'     = 5
+        }
+        if ($volStatusToCode.ContainsKey($volStatus)) {
+            $wmiConvCode = $volStatusToCode[$volStatus]
+        }
+
+        if ($wmiConvCode -eq 0) {
+            Write-Output "[OK]  Conversion Status: $volStatus"
+            Write-Output '       Volume is fully decrypted and eligible for encryption.'
+            $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'OK'; Detail = "$volStatus -- eligible for encryption." })
+        }
+        elseif ($wmiConvCode -eq 1) {
+            Write-Output "[i]   Conversion Status: $volStatus. Already encrypted."
+            $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'INFO'; Detail = "$volStatus. Volume is already encrypted." })
+        }
+        elseif ($wmiConvCode -ge 2) {
+            Write-Output "[!!]  Conversion Status: $volStatus"
+            $pct = $blvFallback.EncryptionPercentage
+            Write-Output "       EncryptionPercentage: $pct%. Volume is in a transitional state."
+            $blockers.Add("Active conversion: $volStatus")
+            $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'ISSUE'; Detail = "$volStatus -- transitional state." })
+        }
+        else {
+            Write-Output "[!]   Conversion Status: $volStatus (could not map to known code)"
+            $warnings.Add("Unknown VolumeStatus: $volStatus")
+            $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'WARN'; Detail = "Unmapped VolumeStatus: $volStatus" })
+        }
+
+        # Protection Status from ProtectionStatus enum
+        $wmiProtCode = -1
+        $protStatus = [string]$blvFallback.ProtectionStatus
+        $protToCode = @{ 'Off' = 0; 'On' = 1; 'Unknown' = 2 }
+        if ($protToCode.ContainsKey($protStatus)) {
+            $wmiProtCode = $protToCode[$protStatus]
+        }
+        Write-Output "[i]   Protection Status: $protStatus"
+        $findings.Add([PSCustomObject]@{ Check = 'Protection Status'; Status = 'INFO'; Detail = $protStatus })
+
+        # Ghost State
+        if ($wmiConvCode -eq 1 -and $wmiProtCode -eq 0) {
+            Write-Output '[!!]  GHOST STATE DETECTED: FullyEncrypted + Protection Off'
+            Write-Output '       Volume appears encrypted but FVEK is stored in the clear.'
+            Write-Output '       Remediation: manage-bde -off C: to fully decrypt, then re-encrypt cleanly.'
+            $blockers.Add('Ghost state: FullyEncrypted with Protection Off')
+            $findings.Add([PSCustomObject]@{ Check = 'Ghost State'; Status = 'ISSUE'; Detail = 'FullyEncrypted + Protection Off.' })
+        }
+
+        # Encryption Method from EncryptionMethod enum
+        $encMeth = [string]$blvFallback.EncryptionMethod
+        if ($encMeth -and $encMeth -ne 'None') {
+            if ($wmiConvCode -eq 0) {
+                Write-Output "[!]   Encryption Method: $encMeth (on a FullyDecrypted volume)"
+                Write-Output '       Residual crypto metadata present.'
+                $warnings.Add("Residual encryption method: $encMeth")
+                $findings.Add([PSCustomObject]@{ Check = 'Encryption Method'; Status = 'WARN'; Detail = "Residual: $encMeth on decrypted volume." })
+            }
+            else {
+                Write-Output "[i]   Encryption Method: $encMeth"
+                $findings.Add([PSCustomObject]@{ Check = 'Encryption Method'; Status = 'INFO'; Detail = $encMeth })
+            }
+        }
+
+        # Key Protectors from KeyProtector array
+        $kpCount = 0
+        $kpTypes = [System.Collections.Generic.List[string]]::new()
+        if ($blvFallback.KeyProtector) {
+            $kpCount = @($blvFallback.KeyProtector).Count
+            foreach ($kp in $blvFallback.KeyProtector) {
+                $kpType = [string]$kp.KeyProtectorType
+                if ($kpType -and -not $kpTypes.Contains($kpType)) { $kpTypes.Add($kpType) }
+            }
+        }
+        $kpTypesStr = if ($kpTypes.Count -gt 0) { $kpTypes -join ', ' } else { 'none' }
+
+        if ($kpCount -gt 0 -and $wmiConvCode -eq 0) {
+            Write-Output "[!!]  Key Protectors: $kpCount protector(s) on a FullyDecrypted volume ($kpTypesStr)"
+            Write-Output '       Orphaned protectors may block fresh encryption.'
+            $blockers.Add("$kpCount orphaned key protector(s) on decrypted volume")
+            $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'ISSUE'; Detail = "$kpCount orphaned: $kpTypesStr" })
+        }
+        elseif ($kpCount -gt 0) {
+            Write-Output "[i]   Key Protectors: $kpCount protector(s) found ($kpTypesStr)"
+            $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'INFO'; Detail = "$kpCount protector(s): $kpTypesStr" })
+        }
+        elseif ($wmiConvCode -eq 0) {
+            Write-Output '[OK]  No key protectors found. Clean slate for fresh encryption.'
+            $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'OK'; Detail = 'Clean slate.' })
+        }
+    }
+    else {
+        Write-Output "[!]   Volume state cannot be assessed for $osDrive."
+        Write-Output '       Neither WMI (Win32_EncryptableVolume) nor Get-BitLockerVolume is available.'
+        Write-Output '       The BitLocker feature may not be installed on this system.'
+        Write-Output '       On Windows Server: Install-WindowsFeature BitLocker -IncludeManagementTools'
+        Write-Output '       On Windows 10/11: Enable via Settings > Apps > Optional Features > BitLocker'
+        $warnings.Add('Volume state assessment unavailable (no WMI, no Get-BitLockerVolume)')
+        $findings.Add([PSCustomObject]@{ Check = 'Volume State'; Status = 'WARN'; Detail = 'Neither WMI nor Get-BitLockerVolume available.' })
+    }
 }
 else {
     # Known BitLocker HRESULT codes from Win32_EncryptableVolume WMI provider.
-    # Translates non-zero return values into actionable diagnostic intelligence.
-    # Source: Microsoft WMI documentation for Win32_EncryptableVolume class.
     $fveErrors = @{
         '0x80310008' = @{ Name = 'FVE_E_NOT_ACTIVATED';                         Detail = 'Protection not activated on this volume.';                          Action = 'Expected on unencrypted drives. No action needed for fresh encryption.' }
         '0x80310018' = @{ Name = 'FVE_E_TPM_NOT_OWNED';                         Detail = 'TPM present but not initialized or ownership not claimed by OS.';    Action = 'Run Initialize-Tpm or open tpm.msc to take ownership. See BL002 BLTpmHealth.' }
@@ -504,49 +524,51 @@ else {
         '0x80072F9A' = @{ Name = 'MDM_POLICY_CONFLICT';                         Detail = 'Local GPO conflicts with Intune/MDM CSP BitLocker directives.';      Action = 'Review: HKLM\SOFTWARE\Microsoft\PolicyManager\current\device\BitLocker' }
     }
 
-    # GetConversionStatus
+    # --- Conversion Status ---
     $convResult = $null
     try {
         $convResult = Invoke-CimMethod -InputObject $encVol -MethodName 'GetConversionStatus' -ErrorAction Stop
     }
     catch { }
 
-    $wmiConvStatus = 'Unknown'
-    $wmiPct = 'Unknown'
+    $wmiConvCode = -1
+    $convStatusMap = @{
+        0 = 'FullyDecrypted'
+        1 = 'FullyEncrypted'
+        2 = 'EncryptionInProgress'
+        3 = 'DecryptionInProgress'
+        4 = 'EncryptionPaused'
+        5 = 'DecryptionPaused'
+    }
 
     if ($convResult -and $convResult.ReturnValue -eq 0) {
-        $convCode = $convResult.ConversionStatus
+        $wmiConvCode = [int]$convResult.ConversionStatus
         $wmiPct = $convResult.EncryptionPercentage
+        $wmiConvStatus = if ($convStatusMap.ContainsKey($wmiConvCode)) { $convStatusMap[$wmiConvCode] } else { "Code $wmiConvCode" }
 
-        $convStatusMap = @{
-            0 = 'FullyDecrypted'
-            1 = 'FullyEncrypted'
-            2 = 'EncryptionInProgress'
-            3 = 'DecryptionInProgress'
-            4 = 'EncryptionPaused'
-            5 = 'DecryptionPaused'
-        }
-        if ($convStatusMap.ContainsKey([int]$convCode)) {
-            $wmiConvStatus = $convStatusMap[[int]$convCode]
-        }
-        else {
-            $wmiConvStatus = "Code $convCode"
-        }
-
-        if ([int]$convCode -eq 0) {
-            Write-Output "[OK]  ConversionStatus: $wmiConvStatus (code $convCode)"
+        if ($wmiConvCode -eq 0) {
+            Write-Output "[OK]  Conversion Status: $wmiConvStatus"
             Write-Output '       Volume is fully decrypted and eligible for encryption.'
-            $findings.Add([PSCustomObject]@{ Check = 'WMI ConversionStatus'; Status = 'OK'; Detail = "$wmiConvStatus (EncryptionPercentage: $wmiPct%)" })
+            $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'OK'; Detail = "$wmiConvStatus -- eligible for encryption." })
         }
-        elseif ([int]$convCode -eq 1) {
-            Write-Output "[i]   ConversionStatus: $wmiConvStatus (code $convCode). Already encrypted."
-            $findings.Add([PSCustomObject]@{ Check = 'WMI ConversionStatus'; Status = 'INFO'; Detail = "$wmiConvStatus. Volume is already encrypted." })
+        elseif ($wmiConvCode -eq 1) {
+            Write-Output "[i]   Conversion Status: $wmiConvStatus. Already encrypted."
+            $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'INFO'; Detail = "$wmiConvStatus. Volume is already encrypted." })
         }
         else {
-            Write-Output "[!!]  ConversionStatus: $wmiConvStatus (code $convCode)"
+            Write-Output "[!!]  Conversion Status: $wmiConvStatus"
             Write-Output "       EncryptionPercentage: $wmiPct%. Volume is in a transitional state."
-            $blockers.Add("WMI ConversionStatus: $wmiConvStatus")
-            $findings.Add([PSCustomObject]@{ Check = 'WMI ConversionStatus'; Status = 'ISSUE'; Detail = "$wmiConvStatus -- transitional state." })
+            Write-Output '       Cannot start a new encryption while another is in progress.'
+            $blockers.Add("Active conversion: $wmiConvStatus")
+            $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'ISSUE'; Detail = "$wmiConvStatus -- transitional state." })
+        }
+
+        # Partial encryption detection
+        if ($null -ne $wmiPct -and [int]$wmiPct -gt 0 -and [int]$wmiPct -lt 100) {
+            Write-Output "[!!]  Percentage Encrypted: $wmiPct%"
+            Write-Output '       Partial encryption detected. Volume is in an incomplete state.'
+            $blockers.Add("Partial encryption: $wmiPct%")
+            $findings.Add([PSCustomObject]@{ Check = 'Percentage Encrypted'; Status = 'ISSUE'; Detail = "Partial: $wmiPct%" })
         }
     }
     else {
@@ -562,23 +584,34 @@ else {
             Write-Output '       Check BitLocker feature installation and WMI provider registration.'
         }
         $warnings.Add("WMI GetConversionStatus returned $retVal")
-        $findings.Add([PSCustomObject]@{ Check = 'WMI ConversionStatus'; Status = 'WARN'; Detail = "GetConversionStatus returned $retVal" })
+        $findings.Add([PSCustomObject]@{ Check = 'Conversion Status'; Status = 'WARN'; Detail = "GetConversionStatus returned $retVal" })
     }
 
-    # GetProtectionStatus
+    # --- Protection Status + Ghost State Detection ---
     $protResult = $null
     try {
         $protResult = Invoke-CimMethod -InputObject $encVol -MethodName 'GetProtectionStatus' -ErrorAction Stop
     }
     catch { }
 
+    $wmiProtCode = -1
     if ($protResult -and $protResult.ReturnValue -eq 0) {
-        $protCode = $protResult.ProtectionStatus
+        $wmiProtCode = [int]$protResult.ProtectionStatus
         $protStatusMap = @{ 0 = 'Off'; 1 = 'On'; 2 = 'Unknown' }
-        $protLabel = if ($protStatusMap.ContainsKey([int]$protCode)) { $protStatusMap[[int]$protCode] } else { "Code $protCode" }
+        $protLabel = if ($protStatusMap.ContainsKey($wmiProtCode)) { $protStatusMap[$wmiProtCode] } else { "Code $wmiProtCode" }
 
-        Write-Output "[i]   ProtectionStatus: $protLabel (code $protCode)"
-        $findings.Add([PSCustomObject]@{ Check = 'WMI ProtectionStatus'; Status = 'INFO'; Detail = "$protLabel (code $protCode)" })
+        Write-Output "[i]   Protection Status: $protLabel (code $wmiProtCode)"
+        $findings.Add([PSCustomObject]@{ Check = 'Protection Status'; Status = 'INFO'; Detail = "$protLabel (code $wmiProtCode)" })
+
+        # Ghost State: FullyEncrypted (1) + Protection Off (0)
+        if ($wmiConvCode -eq 1 -and $wmiProtCode -eq 0) {
+            Write-Output '[!!]  GHOST STATE DETECTED: FullyEncrypted + Protection Off'
+            Write-Output '       Volume appears encrypted but FVEK is stored in the clear.'
+            Write-Output '       This is the "Waiting for Activation" state. Data is NOT protected.'
+            Write-Output '       Remediation: manage-bde -off C: to fully decrypt, then re-encrypt cleanly.'
+            $blockers.Add('Ghost state: FullyEncrypted with Protection Off (Waiting for Activation)')
+            $findings.Add([PSCustomObject]@{ Check = 'Ghost State'; Status = 'ISSUE'; Detail = 'FullyEncrypted + Protection Off. Remediate with manage-bde -off.' })
+        }
     }
     elseif ($protResult) {
         $retVal = "0x{0:X8}" -f $protResult.ReturnValue
@@ -589,7 +622,101 @@ else {
             Write-Output "       Fix: $($errInfo.Action)"
         }
         $warnings.Add("WMI GetProtectionStatus returned $retVal")
-        $findings.Add([PSCustomObject]@{ Check = 'WMI ProtectionStatus'; Status = 'WARN'; Detail = "GetProtectionStatus returned $retVal" })
+        $findings.Add([PSCustomObject]@{ Check = 'Protection Status'; Status = 'WARN'; Detail = "GetProtectionStatus returned $retVal" })
+    }
+
+    # --- Encryption Method ---
+    $encMethodResult = $null
+    try {
+        $encMethodResult = Invoke-CimMethod -InputObject $encVol -MethodName 'GetEncryptionMethod' -ErrorAction Stop
+    }
+    catch { }
+
+    if ($encMethodResult -and $encMethodResult.ReturnValue -eq 0) {
+        $encMethodCode = [int]$encMethodResult.EncryptionMethod
+        $encMethodMap = @{
+            0 = 'None'
+            1 = 'AES-128-Diffuser'
+            2 = 'AES-256-Diffuser'
+            3 = 'AES-128'
+            4 = 'AES-256'
+            5 = 'Hardware Encryption'
+            6 = 'XTS-AES-128'
+            7 = 'XTS-AES-256'
+        }
+        $encMethodLabel = if ($encMethodMap.ContainsKey($encMethodCode)) { $encMethodMap[$encMethodCode] } else { "Code $encMethodCode" }
+
+        if ($encMethodCode -ne 0) {
+            if ($wmiConvCode -eq 0) {
+                Write-Output "[!]   Encryption Method: $encMethodLabel (on a FullyDecrypted volume)"
+                Write-Output '       Residual crypto metadata present. May be from a previous encryption attempt.'
+                $warnings.Add("Residual encryption method: $encMethodLabel on decrypted volume")
+                $findings.Add([PSCustomObject]@{ Check = 'Encryption Method'; Status = 'WARN'; Detail = "Residual metadata: $encMethodLabel on decrypted volume." })
+            }
+            else {
+                Write-Output "[i]   Encryption Method: $encMethodLabel"
+                $findings.Add([PSCustomObject]@{ Check = 'Encryption Method'; Status = 'INFO'; Detail = $encMethodLabel })
+            }
+        }
+    }
+
+    # --- Key Protectors ---
+    $kpResult = $null
+    try {
+        # Type 0 = all protector types
+        $kpResult = Invoke-CimMethod -InputObject $encVol -MethodName 'GetKeyProtectors' -Arguments @{ KeyProtectorType = [uint32]0 } -ErrorAction Stop
+    }
+    catch { }
+
+    $kpCount = 0
+    $kpTypeMap = @{
+        0 = 'Unknown'
+        1 = 'TPM'
+        2 = 'External Key'
+        3 = 'Numerical Password'
+        4 = 'TPM+PIN'
+        5 = 'TPM+Startup Key'
+        6 = 'TPM+PIN+Startup Key'
+        7 = 'Certificate'
+        8 = 'Password'
+        9 = 'TPM Network Key'
+    }
+
+    if ($kpResult -and $kpResult.ReturnValue -eq 0 -and $kpResult.VolumeKeyProtectorID) {
+        $protectorIds = @($kpResult.VolumeKeyProtectorID)
+        $kpCount = $protectorIds.Count
+
+        # Enumerate protector types
+        $kpTypes = [System.Collections.Generic.List[string]]::new()
+        foreach ($kpId in $protectorIds) {
+            $typeResult = $null
+            try {
+                $typeResult = Invoke-CimMethod -InputObject $encVol -MethodName 'GetKeyProtectorType' -Arguments @{ VolumeKeyProtectorID = $kpId } -ErrorAction Stop
+            }
+            catch { }
+            if ($typeResult -and $typeResult.ReturnValue -eq 0) {
+                $typeCode = [int]$typeResult.KeyProtectorType
+                $typeLabel = if ($kpTypeMap.ContainsKey($typeCode)) { $kpTypeMap[$typeCode] } else { "Type $typeCode" }
+                if (-not $kpTypes.Contains($typeLabel)) { $kpTypes.Add($typeLabel) }
+            }
+        }
+        $kpTypesStr = if ($kpTypes.Count -gt 0) { $kpTypes -join ', ' } else { 'unknown types' }
+
+        if ($kpCount -gt 0 -and $wmiConvCode -eq 0) {
+            Write-Output "[!!]  Key Protectors: $kpCount protector(s) on a FullyDecrypted volume ($kpTypesStr)"
+            Write-Output '       Orphaned protectors may block fresh encryption. Remove with manage-bde -protectors -delete.'
+            $blockers.Add("$kpCount orphaned key protector(s) on decrypted volume")
+            $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'ISSUE'; Detail = "$kpCount orphaned protector(s): $kpTypesStr" })
+        }
+        elseif ($kpCount -gt 0) {
+            Write-Output "[i]   Key Protectors: $kpCount protector(s) found ($kpTypesStr)"
+            $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'INFO'; Detail = "$kpCount protector(s): $kpTypesStr" })
+        }
+    }
+
+    if ($kpCount -eq 0 -and $wmiConvCode -eq 0) {
+        Write-Output '[OK]  No key protectors found. Clean slate for fresh encryption.'
+        $findings.Add([PSCustomObject]@{ Check = 'Key Protectors'; Status = 'OK'; Detail = 'No protectors on decrypted volume. Clean slate.' })
     }
 }
 
@@ -623,117 +750,128 @@ else {
     $bcdLines = @($bcdOutput | ForEach-Object { "$_" })
     $bcdIssues = 0
 
-    # Parse into blocks
+    # ----- L10N-safe BCD block parser -----
+    # bcdedit field LABELS are localized (e.g. 'device' -> 'Geraet' on de-DE).
+    # Field VALUES are never localized: {bootmgr}, {current}, partition=..., unknown.
+    # Strategy: split on empty-line boundaries, identify blocks by the first
+    # {word} value (always the identifier), check device health by scanning
+    # for 'unknown' and 'partition=' value patterns.
     $blocks = [System.Collections.Generic.List[PSCustomObject]]::new()
-    $currentBlock = $null
-    $currentId = ''
+    $currentLines = [System.Collections.Generic.List[string]]::new()
 
     foreach ($line in $bcdLines) {
         $trimmed = $line.Trim()
         if ($trimmed -match '^-+$') { continue }
         if ($trimmed -eq '') {
-            if ($currentBlock) {
-                $blocks.Add([PSCustomObject]@{ Id = $currentId; Lines = $currentBlock })
-                $currentBlock = $null
-                $currentId = ''
+            if ($currentLines.Count -gt 0) {
+                # First {word} in the block is always the identifier value
+                $blockId = $null
+                foreach ($bl in $currentLines) {
+                    if ($bl -match '(\{[a-zA-Z0-9_-]+\})') {
+                        $blockId = $Matches[1]
+                        break
+                    }
+                }
+                $blocks.Add([PSCustomObject]@{ Identifier = $blockId; Lines = $currentLines })
+                $currentLines = [System.Collections.Generic.List[string]]::new()
             }
             continue
         }
-        if ($trimmed -match '^(Windows Boot Manager|Windows Boot Loader|Firmware Boot Manager)') {
-            $currentBlock = [System.Collections.Generic.List[string]]::new()
-            $currentId = $trimmed
-        }
-        if ($currentBlock) {
-            $currentBlock.Add($trimmed)
-        }
+        $currentLines.Add($trimmed)
     }
-    if ($currentBlock) {
-        $blocks.Add([PSCustomObject]@{ Id = $currentId; Lines = $currentBlock })
+    # Flush last block (no trailing empty line)
+    if ($currentLines.Count -gt 0) {
+        $blockId = $null
+        foreach ($bl in $currentLines) {
+            if ($bl -match '(\{[a-zA-Z0-9_-]+\})') {
+                $blockId = $Matches[1]
+                break
+            }
+        }
+        $blocks.Add([PSCustomObject]@{ Identifier = $blockId; Lines = $currentLines })
     }
 
-    # Find Boot Manager block
+    # ----- L10N-safe device value helpers -----
+    # 'unknown' as a standalone value after whitespace = broken device reference.
+    # 'partition=...' = healthy device reference (never localized).
+    function _HasUnknownDevice ([string[]]$Lines) {
+        foreach ($l in $Lines) {
+            if ($l -match '\s{2,}unknown\s*$') { return $true }
+        }
+        return $false
+    }
+
+    function _GetDeviceValues ([string[]]$Lines) {
+        $vals = [System.Collections.Generic.List[string]]::new()
+        foreach ($l in $Lines) {
+            if ($l -match '\s{2,}(partition=\S+)') {
+                $vals.Add($Matches[1])
+            }
+        }
+        return $vals
+    }
+
+    # ----- Boot Manager: {bootmgr} -----
     $bootMgrFound = $false
     foreach ($block in $blocks) {
-        if ($block.Id -match 'Windows Boot Manager') {
+        if ($block.Identifier -and $block.Identifier -match '\{bootmgr\}') {
             $bootMgrFound = $true
-            $bmDevice = Get-ParsedValue -Lines $block.Lines -Label 'device'
-            if ($bmDevice) {
-                if ($bmDevice -match 'unknown') {
-                    Write-Output "[!!]  Boot Manager device: $bmDevice"
-                    Write-Output '       Boot Manager points to an UNKNOWN volume. BCD is corrupted.'
-                    Write-Output '       Remediation: bcdboot C:\Windows /s S: /f UEFI'
-                    $blockers.Add('Boot Manager device is unknown -- BCD corrupted')
-                    $bcdIssues++
-                    $findings.Add([PSCustomObject]@{ Check = 'BCD Boot Manager device'; Status = 'ISSUE'; Detail = "Device: $bmDevice -- UNKNOWN volume." })
-                }
-                else {
-                    Write-Output "[OK]  Boot Manager device: $bmDevice"
-                    $findings.Add([PSCustomObject]@{ Check = 'BCD Boot Manager device'; Status = 'OK'; Detail = $bmDevice })
-                }
+            if (_HasUnknownDevice $block.Lines) {
+                Write-Output '[!!]  Boot Manager device: unknown'
+                Write-Output '       Boot Manager points to an UNKNOWN volume. BCD is corrupted.'
+                Write-Output '       Remediation: bcdboot C:\Windows /s S: /f UEFI'
+                $blockers.Add('Boot Manager device is unknown -- BCD corrupted')
+                $bcdIssues++
+                $findings.Add([PSCustomObject]@{ Check = 'BCD Boot Manager device'; Status = 'ISSUE'; Detail = 'Device is UNKNOWN.' })
+            }
+            else {
+                $devVals = _GetDeviceValues $block.Lines
+                $devStr = if ($devVals.Count -gt 0) { $devVals -join ', ' } else { 'present' }
+                Write-Output "[OK]  Boot Manager device: $devStr"
+                $findings.Add([PSCustomObject]@{ Check = 'BCD Boot Manager device'; Status = 'OK'; Detail = $devStr })
             }
             break
         }
     }
 
     if (-not $bootMgrFound) {
-        Write-Output "[!]   Could not locate Windows Boot Manager block in BCD."
+        Write-Output '[!]   Could not locate Boot Manager ({bootmgr}) in BCD.'
         $warnings.Add('Boot Manager block not found in BCD')
-        $findings.Add([PSCustomObject]@{ Check = 'BCD Boot Manager'; Status = 'WARN'; Detail = 'Block not found in BCD output.' })
+        $findings.Add([PSCustomObject]@{ Check = 'BCD Boot Manager'; Status = 'WARN'; Detail = 'Block with identifier {bootmgr} not found.' })
     }
 
-    # Find current/default OS loader block
+    # ----- OS Loader: {current} or {default} -----
     $osLoaderFound = $false
     foreach ($block in $blocks) {
-        if ($block.Id -match 'Windows Boot Loader') {
-            # Check if this is the current/default
-            $identifier = Get-ParsedValue -Lines $block.Lines -Label 'identifier'
-            if ($identifier -and ($identifier -match '\{current\}' -or $identifier -match '\{default\}')) {
-                $osLoaderFound = $true
-
-                $osDevice = Get-ParsedValue -Lines $block.Lines -Label 'device'
-                $osOsDevice = Get-ParsedValue -Lines $block.Lines -Label 'osdevice'
-
-                if ($osDevice) {
-                    if ($osDevice -match 'unknown') {
-                        Write-Output "[!!]  OS Loader ($identifier) device: $osDevice"
-                        Write-Output '       OS Loader device points to an UNKNOWN volume. BCD is broken.'
-                        $blockers.Add("OS Loader device is unknown ($identifier)")
-                        $bcdIssues++
-                        $findings.Add([PSCustomObject]@{ Check = "BCD OS Loader device ($identifier)"; Status = 'ISSUE'; Detail = "Device: $osDevice -- UNKNOWN." })
-                    }
-                    else {
-                        Write-Output "[OK]  OS Loader ($identifier) device: $osDevice"
-                        $findings.Add([PSCustomObject]@{ Check = "BCD OS Loader device ($identifier)"; Status = 'OK'; Detail = $osDevice })
-                    }
-                }
-
-                if ($osOsDevice) {
-                    if ($osOsDevice -match 'unknown') {
-                        Write-Output "[!!]  OS Loader ($identifier) osdevice: $osOsDevice"
-                        Write-Output '       OS Loader osdevice points to an UNKNOWN volume. BCD is broken.'
-                        $blockers.Add("OS Loader osdevice is unknown ($identifier)")
-                        $bcdIssues++
-                        $findings.Add([PSCustomObject]@{ Check = "BCD OS Loader osdevice ($identifier)"; Status = 'ISSUE'; Detail = "osdevice: $osOsDevice -- UNKNOWN." })
-                    }
-                    else {
-                        Write-Output "[OK]  OS Loader ($identifier) osdevice: $osOsDevice"
-                        $findings.Add([PSCustomObject]@{ Check = "BCD OS Loader osdevice ($identifier)"; Status = 'OK'; Detail = $osOsDevice })
-                    }
-                }
-
-                break
+        if ($block.Identifier -and ($block.Identifier -match '\{current\}' -or $block.Identifier -match '\{default\}')) {
+            $osLoaderFound = $true
+            $identifier = $block.Identifier
+            if (_HasUnknownDevice $block.Lines) {
+                Write-Output "[!!]  OS Loader ($identifier) contains an unknown device reference"
+                Write-Output '       One or more device paths point to an UNKNOWN volume. BCD is broken.'
+                Write-Output '       Remediation: bcdboot C:\Windows /s S: /f UEFI'
+                $blockers.Add("OS Loader device is unknown ($identifier)")
+                $bcdIssues++
+                $findings.Add([PSCustomObject]@{ Check = "BCD OS Loader ($identifier)"; Status = 'ISSUE'; Detail = 'Device reference is UNKNOWN.' })
             }
+            else {
+                $devVals = _GetDeviceValues $block.Lines
+                $devStr = if ($devVals.Count -gt 0) { $devVals -join ', ' } else { 'present' }
+                Write-Output "[OK]  OS Loader ($identifier) devices: $devStr"
+                $findings.Add([PSCustomObject]@{ Check = "BCD OS Loader ($identifier)"; Status = 'OK'; Detail = $devStr })
+            }
+            break
         }
     }
 
     if (-not $osLoaderFound) {
-        Write-Output "[!]   Could not locate {current} or {default} OS Loader in BCD."
+        Write-Output '[!]   Could not locate {current} or {default} OS Loader in BCD.'
         $warnings.Add('OS Loader block not found for {current}/{default}')
         $findings.Add([PSCustomObject]@{ Check = 'BCD OS Loader'; Status = 'WARN'; Detail = 'Could not find {current} or {default} loader.' })
     }
 
     if ($bcdIssues -eq 0 -and $bootMgrFound -and $osLoaderFound) {
-        Write-Output "[OK]  All BCD paths are consistent. Boot configuration appears healthy."
+        Write-Output '[OK]  All BCD paths are consistent. Boot configuration appears healthy.'
     }
 }
 

@@ -17,7 +17,7 @@ $testResult = & (Get-Module Indago) {
                 Name = 'TestSystemTask'
                 ExecutionContext = 'System'
                 Parameters = $null
-                Script = "Write-Output 'System Output'"
+                _ScriptContent = "Write-Output 'System Output'"
             },
             [PSCustomObject]@{
                 Id = 'TEST002'
@@ -26,7 +26,7 @@ $testResult = & (Get-Module Indago) {
                 Parameters = [PSCustomObject]@{
                     Param1 = [PSCustomObject]@{ Name = 'ReqParam'; Required = $true; Description = 'A required param' }
                 }
-                Script = "Write-Output `"`$Param1`""
+                _ScriptContent = "Write-Output `"`$Param1`""
             },
             [PSCustomObject]@{
                 Id = 'TEST003'
@@ -35,14 +35,14 @@ $testResult = & (Get-Module Indago) {
                 Parameters = [PSCustomObject]@{
                     Param1 = [PSCustomObject]@{ Name = 'P1'; Required = $false; Default = 'DefVal' }
                 }
-                Script = "Write-Output `"`$Param1-`$Param2`""
+                _ScriptContent = "Write-Output `"`$Param1-`$Param2`""
             },
             [PSCustomObject]@{
                 Id = 'TEST004'
                 Name = 'TestUserTask'
                 ExecutionContext = 'User'
                 Parameters = $null
-                Script = "Write-Output 'User Output'"
+                _ScriptContent = "Write-Output 'User Output'"
             }
         )
 

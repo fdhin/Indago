@@ -127,23 +127,42 @@ Write-Output '--- Disk Partition Scheme ---'
 $partStyle = $null
 $osDiskNumber = $null
 
+# Helper: MSFT_Disk.PartitionStyle may return the string label ('GPT') or
+# the raw UInt16 CIM enum (2).  Normalize to a string so downstream
+# comparisons are reliable on every driver stack and VM type.
+#   0 = Unknown, 1 = MBR, 2 = GPT
+function _NormalizePartStyle ($raw) {
+    if ($null -eq $raw) { return $null }
+    $s = [string]$raw
+    switch ($s) {
+        '2'   { return 'GPT' }
+        '1'   { return 'MBR' }
+        '0'   { return 'RAW' }
+        default { return $s }      # Already a string label
+    }
+}
+
 try {
     # Find the boot disk
     $disks = @(Get-Disk -ErrorAction Stop)
     foreach ($disk in $disks) {
         if ($disk.IsBoot -or $disk.IsSystem) {
             $osDiskNumber = $disk.Number
-            $partStyle = $disk.PartitionStyle
+            $partStyle = _NormalizePartStyle $disk.PartitionStyle
             break
         }
     }
     # Fallback to Disk 0 if no boot disk flagged
     if ($null -eq $osDiskNumber -and $disks.Count -gt 0) {
         $osDiskNumber = $disks[0].Number
-        $partStyle = $disks[0].PartitionStyle
+        $partStyle = _NormalizePartStyle $disks[0].PartitionStyle
     }
-} catch {
-    # CIM fallback
+} catch { }
+
+# CIM fallback: Get-Disk may return empty (no error) on some VMs,
+# or may throw if the Storage module is unavailable.  Either way,
+# fall back to Win32_DiskPartition if we still have no answer.
+if ($null -eq $partStyle) {
     try {
         $diskParts = @(Get-CimInstance -ClassName Win32_DiskPartition -Filter "DiskIndex = 0" -ErrorAction Stop)
         if ($diskParts.Count -gt 0) {

@@ -256,10 +256,14 @@ try {
         if ($actualSize.Length -gt 0 -and $reportedSize.Length -gt 0) { Write-Output "       Actual size: $actualSize (reported: $reportedSize due to hard links)." }
         elseif ($actualSize.Length -gt 0) { Write-Output "       Actual size: $actualSize." }
         if ($sharedSize.Length -gt 0 -and $backupsSize.Length -gt 0) { Write-Output "       Shared with Windows: $sharedSize. Backups/disabled: $backupsSize." }
-        if ($reclaimable.Length -gt 0) { Write-Output "       Reclaimable packages: $reclaimable." }
+        if ($reclaimable.Length -gt 0) { Write-Output "       Reclaimable packages: $reclaimable (superseded updates eligible for removal)." }
         if ($lastCleanup.Length -gt 0) { Write-Output "       Last cleanup: $lastCleanup." }
         if ($cleanupNeeded) {
             Write-Output '       Component Store Cleanup Recommended: Yes.'
+            Write-Output '       What it does: removes superseded update components and old versions'
+            Write-Output '       of replaced system files. Frees disk space in C:\Windows\WinSxS.'
+            Write-Output '       Safety: read-only diagnostic + cleanup. No reboot required.'
+            Write-Output '       Trade-off: previously installed updates can no longer be uninstalled.'
             Write-Output '       Run: DISM /Online /Cleanup-Image /StartComponentCleanup'
             $warnCount++
         } else { Write-Output '       Component Store Cleanup Recommended: No.' }

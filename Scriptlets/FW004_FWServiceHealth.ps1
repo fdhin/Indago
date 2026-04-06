@@ -207,13 +207,14 @@ try {
         } else {
             Write-Output "[!]   $profName Profile Log"
             Write-Output '       LogBlocked: False. LogAllowed: False.'
-            Write-Output '       Firewall drops are NOT being logged. Enable for troubleshooting.'
+            Write-Output '       Firewall drops are NOT being logged. Enable for troubleshooting:'
+            Write-Output "       Set-NetFirewallProfile -Name $profName -LogBlocked True"
             $warnCount++
         }
 
         if ($null -ne $logMaxSize -and $logMaxSize -gt 0 -and $logMaxSize -le 4096) {
-            Write-Output "[i]   Log max size: $logMaxSize KB (default 4 MB). Increase to 32 MB:"
-            Write-Output "       Set-NetFirewallProfile -All -LogMaxSizeKilobytes 32768"
+            Write-Output "[i]   Log max size: $logMaxSize KB (default 4 MB). Increase to 16 MB:"
+            Write-Output '       Set-NetFirewallProfile -All -LogMaxSizeKilobytes 16384'
         }
     }
 } catch {

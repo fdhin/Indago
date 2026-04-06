@@ -62,7 +62,7 @@ $testResult = & (Get-Module Indago) {
         # Call the function with mocked internals.
         # StartProcessAsCurrentUser will fail (no real user session), but
         # the ACL catch block should have already run without terminating.
-        Invoke-AsUserCacheToDisk -ScriptText "Write-Output 'Test'" -TimeoutMs 1000 -LoggedOnUser $fakeUser -WarningVariable warns -WarningAction Continue -ErrorAction SilentlyContinue
+        Invoke-AsUserCacheToDisk -ScriptText "Write-Output 'Test'" -TimeoutMs 1000 -LoggedOnUser $fakeUser -WarningVariable warns -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
 
         # Reaching here means the ACL block did not terminate the function
         $noCrash = $true

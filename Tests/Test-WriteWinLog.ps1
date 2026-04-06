@@ -18,7 +18,7 @@ $testResult = & (Get-Module Indago) {
         try {
             $ErrorActionPreference = 'Stop'
             # We must catch the warning internally and not throw due to ErrorAction Stop affecting Add-Content but maybe other stuff.
-            Write-WinLog -TaskName 'Test' -ExecutionContext 'System' -Status 'Success' -WarningVariable warns -WarningAction Continue -ErrorAction Continue
+            Write-WinLog -TaskName 'Test' -ExecutionContext 'System' -Status 'Success' -WarningVariable warns -WarningAction SilentlyContinue -ErrorAction Continue
             $noCrash = $true
         }
         catch {
