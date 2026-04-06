@@ -68,7 +68,7 @@ function Extract-HResults {
 # ============================================================
 Write-Output '--- Protection State Timeline ---'
 
-$protectionEventIds = @(1000, 1001, 1002, 1005, 1150, 2000, 2001, 2002, 5007)
+$protectionEventIds = @(1000, 1001, 1002, 1005, 1121, 1122, 1150, 2000, 2001, 2002, 3002, 5007, 5008, 5013)
 $protectionEvents = @()
 
 try {
@@ -101,13 +101,16 @@ $defUpdateStarted = @($protectionEvents | Where-Object { $_.Id -eq 2000 })
 $defUpdateSucceeded = @($protectionEvents | Where-Object { $_.Id -eq 2001 })
 $defUpdateFailed = @($protectionEvents | Where-Object { $_.Id -eq 2002 })
 $configChanged = @($protectionEvents | Where-Object { $_.Id -eq 5007 })
+$asrBlocks = @($protectionEvents | Where-Object { $_.Id -in @(1121, 1122) })
+$engineCrash = @($protectionEvents | Where-Object { $_.Id -in @(3002, 5008) })
+$tamperBlock = @($protectionEvents | Where-Object { $_.Id -eq 5013 })
 
 # Summary statistics
 $totalProtEvents = $protectionEvents.Count
 $findings.Add([PSCustomObject]@{
     Check  = 'Protection Event Summary'
     Status = 'INFO'
-    Detail = "$totalProtEvents protection event(s) in the last $daysBack day(s): $($scanStarted.Count) scan start, $($scanCompleted.Count) scan complete, $($scanCancelled.Count) scan cancelled, $($scanFailed.Count) scan failed, $($defUpdateSucceeded.Count) def update OK, $($defUpdateFailed.Count) def update fail, $($configChanged.Count) config change, $($serviceHealthy.Count) health heartbeat."
+    Detail = "$totalProtEvents protection event(s) in the last $daysBack day(s): $($scanStarted.Count) scan start, $($scanCompleted.Count) scan complete, $($scanCancelled.Count) scan cancelled, $($scanFailed.Count) scan failed, $($defUpdateSucceeded.Count) def update OK, $($defUpdateFailed.Count) def update fail, $($configChanged.Count) config change, $($asrBlocks.Count) ASR block, $($tamperBlock.Count) tamper block, $($engineCrash.Count) crash, $($serviceHealthy.Count) health heartbeat."
 })
 
 # Scan failures
@@ -191,6 +194,35 @@ if ($configChanged.Count -gt 0) {
             Detail = "$($evt.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss')) -- $msg"
         })
     }
+}
+
+# ASR Rules (1121/1122)
+if ($asrBlocks.Count -gt 0) {
+    # Deduplicate ASR blocks based on the exact message (which contains the process and rule)
+    $uniqueAsr = $asrBlocks | Group-Object Message
+    $findings.Add([PSCustomObject]@{
+        Check  = 'Attack Surface Reduction (ASR)'
+        Status = 'WARN'
+        Detail = "$($asrBlocks.Count) total ASR block(s) detected spanning $($uniqueAsr.Count) unique rule/process combination(s). A legitimate LOB application may be blocked. Review Event 1121/1122."
+    })
+}
+
+# Engine Crashes (3002/5008)
+if ($engineCrash.Count -gt 0) {
+    $findings.Add([PSCustomObject]@{
+        Check  = 'Defender Engine Crash (3002/5008)'
+        Status = 'ISSUE'
+        Detail = "CRITICAL: $($engineCrash.Count) engine crash event(s). The core antimalware engine (5008) or Real-time protection (3002) is fatally failing."
+    })
+}
+
+# Tamper Protection (5013)
+if ($tamperBlock.Count -gt 0) {
+    $findings.Add([PSCustomObject]@{
+        Check  = 'Tamper Protection (5013)'
+        Status = 'INFO'
+        Detail = "$($tamperBlock.Count) Tamper Protection block(s). An unauthorized process or script attempted to modify Defender registry settings and was blocked."
+    })
 }
 
 # Service health

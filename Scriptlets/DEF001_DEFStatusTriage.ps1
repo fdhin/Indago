@@ -191,16 +191,25 @@ try {
 
 # --- Check 3: Core Defender Services ---
 $services = @(
-    @{ Name = 'WinDefend'; Display = 'Windows Defender Antivirus (WinDefend)'; ExpectedStart = 'Automatic' },
-    @{ Name = 'WdNisSvc';  Display = 'Network Inspection Service (WdNisSvc)';  ExpectedStart = 'Manual' }
+    @{ Name = 'WinDefend';             Display = 'Windows Defender Antivirus (WinDefend)';        ExpectedStart = 'Automatic'; Optional = $false; Note = '' },
+    @{ Name = 'WdNisSvc';              Display = 'Network Inspection Service (WdNisSvc)';         ExpectedStart = 'Manual';    Optional = $false; Note = '' },
+    @{ Name = 'SecurityHealthService'; Display = 'Windows Security Health (SecurityHealthService)'; ExpectedStart = 'Manual';  Optional = $false; Note = 'Feeds compliance state to Windows Security UI and Intune.' },
+    @{ Name = 'wscsvc';                Display = 'Security Center (wscsvc)';                      ExpectedStart = 'Automatic'; Optional = $false; Note = 'Brokers AV status to OS and Intune. If dead, compliance reports no AV.' },
+    @{ Name = 'MDCoreSvc';             Display = 'Defender Core Service (MDCoreSvc)';              ExpectedStart = 'Automatic'; Optional = $true;  Note = 'Win 11 23H2+. Manages engine lifecycle. If crashed, AV engine is orphaned.' }
 )
 
 foreach ($svc in $services) {
     $s = Get-Service -Name $svc.Name -ErrorAction SilentlyContinue
     if ($null -eq $s) {
-        Write-Output "[!!]  $($svc.Display)"
-        Write-Output '       Service not found. Defender may not be installed.'
-        $issueCount++
+        if ($svc.Optional -eq $true) {
+            Write-Output "[i]   $($svc.Display)"
+            Write-Output '       Service not found (expected on older OS builds).'
+        } else {
+            Write-Output "[!!]  $($svc.Display)"
+            Write-Output '       Service not found. Defender may not be installed.'
+            if ($svc.Note.Length -gt 0) { Write-Output "       $($svc.Note)" }
+            $issueCount++
+        }
     } else {
         $startType = $s.StartType.ToString()
         $status    = $s.Status.ToString()
@@ -208,10 +217,12 @@ foreach ($svc in $services) {
         if ($startType -eq 'Disabled') {
             Write-Output "[!!]  $($svc.Display)"
             Write-Output "       DISABLED. Service cannot start. Run DEF008 DEFRemediation."
+            if ($svc.Note.Length -gt 0) { Write-Output "       $($svc.Note)" }
             $issueCount++
         } elseif ($status -ne 'Running' -and $svc.ExpectedStart -eq 'Automatic') {
             Write-Output "[!!]  $($svc.Display)"
             Write-Output "       $status, start type: $startType. Should be running. Run DEF008 DEFRemediation."
+            if ($svc.Note.Length -gt 0) { Write-Output "       $($svc.Note)" }
             $issueCount++
         } elseif ($status -ne 'Running' -and $svc.ExpectedStart -eq 'Manual') {
             Write-Output "[OK]  $($svc.Display)"

@@ -56,6 +56,8 @@ if ($null -eq $isUEFI) {
 if ($isUEFI -eq $true) {
     Write-Output '[OK]  Boot Mode'
     Write-Output '       UEFI. Compatible with Intune silent encryption.'
+    Write-Output '       Note: In UEFI mode, the BitLocker Recovery screen will automatically shut down the'
+    Write-Output '       computer after exactly 60 seconds of inactivity. This is an expected "by-design" timeout.'
 } elseif ($isUEFI -eq $false) {
     Write-Output '[!!]  Boot Mode'
     Write-Output '       Legacy BIOS. Silent BitLocker encryption is NOT supported in Legacy mode.'
@@ -269,13 +271,18 @@ if (-not $sysPartFound) {
         $issueCount++
     }
 
-    # Format check (UEFI expects FAT32)
-    if ($isUEFI -eq $true -and -not [string]::IsNullOrWhiteSpace($sysPartFormat)) {
-        if ($sysPartFormat -ne 'FAT32') {
-            Write-Output "[!]   System Partition Format"
-            Write-Output "       Expected FAT32 for UEFI, found $sysPartFormat."
-            Write-Output '       This may indicate a non-standard partition layout.'
-            $warnCount++
+    # Format check (UEFI strictly requires FAT32, Legacy BIOS strictly requires NTFS)
+    if (-not [string]::IsNullOrWhiteSpace($sysPartFormat) -and $null -ne $isUEFI) {
+        if ($isUEFI -and $sysPartFormat -ne 'FAT32') {
+            Write-Output "[!!]  System Partition Format"
+            Write-Output "       Found format: $sysPartFormat. UEFI systems STRICTLY require FAT32 for the ESP."
+            Write-Output '       BitLocker cannot stage pre-boot authentication files onto an NTFS/exFAT partition under UEFI.'
+            $issueCount++
+        } elseif (-not $isUEFI -and $sysPartFormat -ne 'NTFS') {
+            Write-Output "[!!]  System Partition Format"
+            Write-Output "       Found format: $sysPartFormat. Legacy BIOS systems STRICTLY require NTFS for the system partition."
+            Write-Output '       BitLocker cannot stage pre-boot authentication files onto a FAT32 partition under Legacy BIOS.'
+            $issueCount++
         }
     }
 }
@@ -618,12 +625,31 @@ try {
             Write-Output '       does not require VBS, but pre-24H2 auto-device-encryption relied on'
             Write-Output '       HSTI attestation which includes VBS. Kernel DMA Protection also requires VBS.'
         }
-    }
-    else {
+    } else {
         Write-Output '[i]   VBS / DeviceGuard: WMI class returned no data.'
     }
 } catch {
     Write-Output '[i]   VBS / DeviceGuard: WMI class not available on this OS build.'
+}
+
+Write-Output ''
+
+# ---------------------------------------------------------------
+# Check 9: Conflicting Filter Drivers
+# ---------------------------------------------------------------
+Write-Output '--- Conflicting Filter Drivers ---'
+
+$stcDriverPath = "$env:SystemRoot\System32\drivers\stcvsm.sys"
+if (Test-Path $stcDriverPath -ErrorAction SilentlyContinue) {
+    Write-Output '[!!]  StorageCraft VSM Filter Driver Detected (Stcvsm.sys)'
+    Write-Output '       This third-party filter driver explicitly breaks BitLocker on Hyper-V Generation 2 VMs.'
+    Write-Output '       Symptom: The OS drive encrypts, but the system reboots and labels the drive as "Unknown",'
+    Write-Output '       prompting the user to format it.'
+    Write-Output '       RESOLUTION: Remove StorageCraft software or disable the Stcvsm filter driver.'
+    $issueCount++
+} else {
+    Write-Output '[OK]  No Known Conflicting Filter Drivers'
+    Write-Output '       StorageCraft Stcvsm.sys and other known conflict drivers not found.'
 }
 
 Write-Output ''

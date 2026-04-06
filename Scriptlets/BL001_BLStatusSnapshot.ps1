@@ -337,6 +337,21 @@ if ($null -eq $bdesvc) {
         Write-Output '[OK]  BitLocker Service (BDESVC)'
         Write-Output "       $bdeStatus, start type: $bdeStart. Operational."
     }
+
+    # Verify BDESvc SDDL for the Removable Drive "Access is denied" bug
+    try {
+        $scOut = & sc.exe sdshow bdesvc 2>&1
+        $sddl = $scOut -join ''
+        # Look for the 'IU' (Interactive) identity which incorrectly replaces 'AU' (Authenticated Users)
+        if ($sddl -match ';;;IU') {
+            Write-Output ''
+            Write-Output '[!!]  BitLocker Service (BDESVC) -- Security Descriptor Bug'
+            Write-Output '       The BDESvc security descriptor contains INTERACTIVE (IU) instead of Authenticated Users (AU).'
+            Write-Output '       This explicitly causes an "Access is denied" error when users try to encrypt removable USB drives.'
+            Write-Output '       RESOLUTION: Run "sc sdset bdesvc <Default_SDDL>" to repair. Check GPOs for service permission poisoning.'
+            $issueCount++
+        }
+    } catch { }
 }
 
 # --- Summary ---

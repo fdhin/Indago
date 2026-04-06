@@ -447,6 +447,81 @@ if (-not $prefOK) {
 Write-Output ''
 
 # ---------------------------------------------------------------
+# Check 4b: Shadow Exclusion Registry Audit
+# Get-MpPreference / MSFT_MpPreference only surfaces the active
+# merged exclusion set. Two additional registry hives can hold
+# exclusions that the modern cmdlets do not report:
+#   1. GPO policy path -- actively honored, but lacks WdFilter
+#      kernel protection (primary attack surface for T1562.001)
+#   2. Legacy SCEP/Microsoft Antimalware path -- invisible to
+#      modern WMI classes but may still be read by some components
+# ---------------------------------------------------------------
+Write-Output '--- Shadow Exclusion Registry Audit ---'
+
+$shadowHives = @(
+    @{
+        Label = 'GPO Policy'
+        Path  = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Exclusions'
+        Risk  = 'HIGH -- this path is actively honored by Defender but lacks kernel-mode protection.'
+    }
+    @{
+        Label = 'Legacy SCEP/Antimalware'
+        Path  = 'HKLM:\SOFTWARE\Microsoft\Microsoft Antimalware\Exclusions'
+        Risk  = 'MEDIUM -- legacy hive invisible to Get-MpPreference. APTs exploit this blind spot.'
+    }
+)
+
+$shadowFound = $false
+
+foreach ($hive in $shadowHives) {
+    if (-not (Test-Path $hive.Path)) { continue }
+
+    $subKeys = @('Paths', 'Extensions', 'Processes')
+    foreach ($sub in $subKeys) {
+        $subPath = "$($hive.Path)\$sub"
+        if (-not (Test-Path $subPath)) { continue }
+
+        $entries = $null
+        try {
+            $regItem = Get-ItemProperty -Path $subPath -ErrorAction Stop
+            if ($null -ne $regItem) {
+                $entries = @($regItem.PSObject.Properties | Where-Object {
+                    $_.Name -notmatch '^PS' -and $_.Name -ne '(default)'
+                })
+            }
+        } catch { }
+
+        if ($null -ne $entries -and $entries.Count -gt 0) {
+            if (-not $shadowFound) {
+                Write-Output '[!!]  Shadow Exclusions Detected Outside Normal WMI View'
+                $shadowFound = $true
+            }
+
+            Write-Output ''
+            Write-Output "[!!]  $($hive.Label): $($entries.Count) $sub exclusion(s)"
+            Write-Output "       Source: $($hive.Path)\$sub"
+            Write-Output "       Risk: $($hive.Risk)"
+
+            $showMax = [math]::Min($entries.Count, 10)
+            for ($ei = 0; $ei -lt $showMax; $ei++) {
+                Write-Output "       - $($entries[$ei].Name)"
+            }
+            if ($entries.Count -gt 10) {
+                Write-Output "       ... and $($entries.Count - 10) more"
+            }
+            $issueCount++
+        }
+    }
+}
+
+if (-not $shadowFound) {
+    Write-Output '[OK]  No shadow exclusions found in GPO policy or legacy SCEP registry hives.'
+    Write-Output '       All exclusions are visible through the standard MSFT_MpPreference WMI class.'
+}
+
+Write-Output ''
+
+# ---------------------------------------------------------------
 # Check 5: ASR (Attack Surface Reduction) Rules
 # ---------------------------------------------------------------
 Write-Output '--- ASR Rules ---'

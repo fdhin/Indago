@@ -49,6 +49,7 @@ if (-not $fveExists) {
         @{ Name = 'UseTPMPIN';     Label = 'Startup PIN (GPO)';      Map = $tpmUsageMap }
         @{ Name = 'UseTPMKey';     Label = 'Startup Key (GPO)';      Map = $tpmUsageMap }
         @{ Name = 'UseTPMKeyPIN';  Label = 'TPM+Key+PIN (GPO)';      Map = $tpmUsageMap }
+        @{ Name = 'OSManageNKP';   Label = 'Network Unlock (GPO)';   Map = $null }
         @{ Name = 'MinimumPIN';    Label = 'Minimum PIN Length (GPO)'; Map = $null }
         @{ Name = 'OSRecovery';    Label = 'OS Recovery (GPO)';       Map = $null }
         @{ Name = 'OSRequireActiveDirectoryBackup'; Label = 'Require AD Backup (GPO)'; Map = $null }
@@ -89,11 +90,13 @@ if (-not $fveExists) {
     # Check for legacy platform validation subkeys
     $biosValidation = Test-Path (Join-Path $fvePath 'OSPlatformValidation_BIOS')
     $uefiValidation = Test-Path (Join-Path $fvePath 'OSPlatformValidation_UEFI')
+    $platValidation = Test-Path (Join-Path $fvePath 'PlatformValidation')
 
-    if ($biosValidation -or $uefiValidation) {
+    if ($biosValidation -or $uefiValidation -or $platValidation) {
         $subkeys = @()
         if ($biosValidation) { $subkeys += 'OSPlatformValidation_BIOS' }
         if ($uefiValidation) { $subkeys += 'OSPlatformValidation_UEFI' }
+        if ($platValidation) { $subkeys += 'PlatformValidation' }
         $findings.Add([PSCustomObject]@{
             Check  = 'Legacy PCR Validation Profiles (GPO)'
             Status = 'ISSUE'
@@ -362,6 +365,35 @@ if ($fveExists -and $fveValueCount -gt 0 -and $mdmExists) {
         }
     }
 
+    # 3e -- Network Unlock (NKP) Infrastructure
+    $gpoNkp = $null
+    if ($fveValues.ContainsKey('OSManageNKP')) {
+        $gpoNkp = [int]$fveValues['OSManageNKP']
+    }
+
+    if ($null -ne $gpoNkp -and $gpoNkp -eq 1) {
+        $findings.Add([PSCustomObject]@{
+            Check  = 'Network Unlock (NKP) Dependency'
+            Status = 'INFO'
+            Detail = "GPO enables Network Unlock (OSManageNKP=1). If devices still prompt for a PIN on the wired network, ensure the DHCP server is configured STRICTLY for 'DHCP' and NOT 'DHCP and BOOTP'. DHCP servers answering NKP requests with BOOTP replies will silently break the unlock sequence."
+        })
+    }
+
+    # 3f -- Startup Key (USB) Reliability
+    $gpoBdeNoTpm = $null
+    if ($fveValues.ContainsKey('EnableBDEWithNoTPM')) { $gpoBdeNoTpm = [int]$fveValues['EnableBDEWithNoTPM'] }
+    
+    $gpoUseTpmKey = $null
+    if ($fveValues.ContainsKey('UseTPMKey')) { $gpoUseTpmKey = [int]$fveValues['UseTPMKey'] }
+
+    if (($null -ne $gpoBdeNoTpm -and $gpoBdeNoTpm -eq 1) -or ($null -ne $gpoUseTpmKey -and $gpoUseTpmKey -eq 1)) {
+        $findings.Add([PSCustomObject]@{
+            Check  = 'Startup Key (USB) Dependency'
+            Status = 'WARN'
+            Detail = "GPO allows/requires a Startup Key (EnableBDEWithNoTPM=1 or UseTPMKey=1). If encryption fails during the pre-boot hardware test complaining 'the key cannot be obtained', the system BIOS failed to enumerate the USB port or read the flash drive during boot. Try a different USB port, a different thumb drive, or update the BIOS."
+        })
+    }
+
     if (-not $conflictsFound) {
         $findings.Add([PSCustomObject]@{
             Check  = 'Conflict Summary'
@@ -504,6 +536,32 @@ if ($hasFveSettings) {
         Check  = 'Orphaned GPO Settings'
         Status = 'OK'
         Detail = 'No GPO BitLocker settings in FVE registry. No orphaned settings possible.'
+    })
+}
+
+# ============================================================
+# Check 6 -- Cryptography & FIPS Interoperability
+# ============================================================
+Write-Output ''
+Write-Output '--- Cryptography & FIPS Interoperability ---'
+
+$fipsPath = 'HKLM:\System\CurrentControlSet\Control\Lsa\FipsAlgorithmPolicy'
+$fipsEnabled = 0
+try {
+    $fipsEnabled = (Get-ItemProperty -Path $fipsPath -Name 'Enabled' -ErrorAction Stop).Enabled
+} catch { }
+
+if ($fipsEnabled -eq 1) {
+    $findings.Add([PSCustomObject]@{
+        Check  = 'FIPS Cryptography Mode'
+        Status = 'ISSUE'
+        Detail = "System Cryptography is set to use FIPS compliant algorithms only, but the BitLocker 48-digit numerical Recovery Password relies on a non-FIPS compliant key derivation algorithm. BitLocker encryption will permanently fail, throwing 'Policy requires a password which is not allowed.' Disable FIPS mode via Local/Group Policy."
+    })
+} else {
+    $findings.Add([PSCustomObject]@{
+        Check  = 'FIPS Cryptography Mode'
+        Status = 'OK'
+        Detail = "FIPS algorithm enforcement is disabled. BitLocker can safely generate numerical recovery passwords."
     })
 }
 

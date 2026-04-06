@@ -186,7 +186,56 @@ if ($platformFailCount -gt 0 -and $null -ne $latestPlatformFail) {
     Write-Output '[!!]  Platform/Engine Update Failure'
     Write-Output "       $platformFailCount platform-related failure(s) in last $lookbackDays days."
     Write-Output "       Most recent: $failTimeStr (Event $($latestPlatformFail.Id))."
-    if (-not [string]::IsNullOrWhiteSpace($hresultCode)) { if (-not [string]::IsNullOrWhiteSpace($hresultDesc)) { Write-Output "       Error: $hresultCode -- $hresultDesc." } else { Write-Output "       Error: $hresultCode (not in known HRESULT table)." } }
+    if (-not [string]::IsNullOrWhiteSpace($hresultCode)) {
+        if (-not [string]::IsNullOrWhiteSpace($hresultDesc)) {
+            Write-Output "       Error: $hresultCode -- $hresultDesc."
+        } else {
+            Write-Output "       Error: $hresultCode (not in known HRESULT table)."
+        }
+
+        # Catch WinRE exhaustion errors and proactively query disk state
+        if ($hresultCode -eq '0X80070643' -or $hresultCode -eq '0X800F0922') {
+            Write-Output ''
+            Write-Output '       --> PROACTIVE DIAGNOSTIC: WinRE Verification <--'
+            try {
+                $reagentcOutput = & reagentc.exe /info
+                Write-Output '       [reagentc.exe /info output]'
+                foreach ($line in $reagentcOutput) {
+                    if (-not [string]::IsNullOrWhiteSpace($line)) { Write-Output "       > $line" }
+                }
+            } catch {
+                Write-Output '       [reagentc.exe /info failed to execute]'
+            }
+
+            try {
+                Write-Output '       [Recovery Partition Free Space]'
+                $osDisk = Get-Partition -DriveLetter $env:SystemDrive.Substring(0, 1) -ErrorAction Stop
+                $recParts = @(Get-Partition -DiskNumber $osDisk.DiskNumber -ErrorAction Stop | Where-Object {
+                    $_.GptType -eq '{de94bba4-06d1-4d40-a16a-bfd50179d6ac}' -or $_.Type -eq 'Recovery'
+                })
+                
+                if ($recParts.Count -gt 0) {
+                    $recPart = $recParts[$recParts.Count - 1]
+                    $recSizeMB = [math]::Round($recPart.Size / 1MB, 0)
+                    $volInfo = $null
+                    try { $volInfo = Get-Volume -Partition $recPart -ErrorAction Stop } catch { }
+                    
+                    if ($null -ne $volInfo -and $null -ne $volInfo.SizeRemaining) {
+                        $freeMB = [math]::Round($volInfo.SizeRemaining / 1MB, 0)
+                        $statusStr = if ($freeMB -lt 250) { 'CRITICAL (WinRE updates blocked)' } else { 'OK' }
+                        Write-Output "       > Size: $recSizeMB MB | Free: $freeMB MB ($statusStr)"
+                    } else {
+                        Write-Output "       > Size: $recSizeMB MB | Free: Unknown (partition locked)"
+                    }
+                } else {
+                    Write-Output '       > No dedicated Recovery Partition found.'
+                }
+            } catch {
+                Write-Output '       > Failed to query disk partition data.'
+            }
+            Write-Output ''
+        }
+    }
     $issueCount++
 }
 $cfgEvents = $null

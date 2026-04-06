@@ -414,12 +414,29 @@ foreach ($taskName in $taskNames) {
     } catch { }
 
     if ($null -eq $task) {
-        Write-Output "[!!]  $taskName"
-        Write-Output '       MISSING. Task does not exist in Task Scheduler.'
-        Write-Output '       This commonly happens after in-place OS upgrades or Sysprep imaging.'
-        Write-Output '       Run DEF008 DEFRemediation to recreate Defender scheduled tasks.'
-        $issueCount++
-        continue
+        # Fallback: WMI provider (PS_ScheduledTask) often breaks on Server 2022/Win 11.
+        # Use native schtasks.exe to prevent hallucinating that tasks are gone.
+        $schFallback = $false
+        try {
+            $fullTaskPath = "$taskPath$taskName"
+            # Execute natively and suppress stderr
+            $schOut = & schtasks.exe /query /tn $fullTaskPath 2>&1
+            if ($LASTEXITCODE -eq 0 -and $null -ne $schOut) { $schFallback = $true }
+        } catch { }
+
+        if ($schFallback) {
+            Write-Output "[OK]  $taskName"
+            Write-Output '       Task exists natively but Get-ScheduledTask failed (WMI provider is broken/desync).'
+            Write-Output '       Verified via schtasks.exe fallback. Cannot retrieve last run state.'
+            continue
+        } else {
+            Write-Output "[!!]  $taskName"
+            Write-Output '       MISSING. Task does not exist natively or via WMI.'
+            Write-Output '       This commonly happens after in-place OS upgrades or Sysprep imaging.'
+            Write-Output '       Run DEF008 DEFRemediation to recreate Defender scheduled tasks.'
+            $issueCount++
+            continue
+        }
     }
 
     $state = $task.State

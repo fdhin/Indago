@@ -261,6 +261,8 @@ try {
                 Write-Output '       Intune compliance policies often require TPM 2.0.'
                 Write-Output '       TPM 1.2 limits BitLocker to legacy modes and prevents silent encryption.'
                 Write-Output '       Check if BIOS offers a 1.2-to-2.0 firmware switch (some hardware supports this).'
+                Write-Output '       WARNING: BIOS firmware updates will trigger BitLocker Recovery on TPM 1.2.'
+                Write-Output '       (TPM 1.2 lacks dynamic PCR 7 limits; suspend BitLocker manually before updating).'
                 $warnCount++
             } else {
                 Write-Output '[i]   TPM Specification Version'
@@ -470,11 +472,14 @@ if ($null -ne $tpmObj) {
         Write-Output '       No exact unlock time can be predicted.'
         Write-Output '       No native method exists to clear the lockout without the owner auth password'
         Write-Output '       (which modern Windows discards after provisioning).'
+        Write-Output '       OEM BUG: If this is a brand new device, the OEM may have shipped it without clearing the factory lockout state.'
+        Write-Output '       Clear the TPM in BIOS or via Windows Security to reset the counter.'
         $issueCount++
     } elseif ($null -ne $lockCount -and $lockCount -gt 0) {
         Write-Output '[!]   TPM Lockout Activity'
         Write-Output "       LockoutCount: $lockCount of $lockMax max. Not locked out, but failed attempts recorded."
         Write-Output '       Investigate what is causing repeated auth failures (PIN brute-force, malware, driver bug).'
+        Write-Output '       OEM BUG: If this is a brand new device, this count may be an artifact from the factory floor.'
         $warnCount++
     } else {
         $maxStr = if ($null -ne $lockMax) { $lockMax.ToString() } else { 'unknown' }
@@ -485,6 +490,23 @@ if ($null -ne $tpmObj) {
     Write-Output '[i]   Lockout State'
     Write-Output '       Get-Tpm data unavailable. Unable to check lockout state.'
 }
+
+# Check System log for TPM Anti-Hammering events (Event 1026)
+$lookbackDays = 7
+$startTime    = (Get-Date).AddDays(-$lookbackDays)
+try {
+    $evt1026 = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-TPM-WMI'; Id = 1026; StartTime = $startTime } -MaxEvents 1 -ErrorAction Stop
+    if ($null -ne $evt1026 -and $evt1026.Count -gt 0) {
+        $latest = $evt1026[0]
+        Write-Output ''
+        Write-Output '[!!]  Anti-Hammering Lockout Detected (Event 1026)'
+        Write-Output "       Last occurrence: $($latest.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss'))"
+        Write-Output '       The TPM triggered its Anti-hammering defense (0x840000) against dictionary attacks.'
+        Write-Output '       This EXPLICITLY breaks Windows Hello, Entra ID SSO, and PRT issuance.'
+        Write-Output '       RESOLUTION: Leave the system powered on (no sleep/hibernate) until the timeout expires.'
+        $issueCount++
+    }
+} catch { }
 
 Write-Output ''
 
