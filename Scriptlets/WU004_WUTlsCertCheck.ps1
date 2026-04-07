@@ -1,6 +1,6 @@
 # WU004_WUTlsCertCheck.ps1
 # Scriptlet: WU004 - TLS, Certificates & Time Check
-# Context: System | Version: 1.0
+# Context: System | Version: 1.2
 
 $ErrorActionPreference = 'SilentlyContinue'
 Write-Output ''
@@ -252,28 +252,25 @@ $offsetMeasured = $false
 if ($w32Running -and $timeSource -ne 'Unknown' -and $timeSource -ne '(W32Time service not running)' -and $timeSource -ne '(query failed)') {
     # Use the configured NTP source for stripchart
     $ntpTarget = $timeSource
-    # If source contains comma-separated servers, take the first
-    if ($ntpTarget -like '*,*') {
-        $ntpTarget = ($ntpTarget -split ',')[0].Trim()
-    }
-    # Clean common prefixes
-    $ntpTarget = $ntpTarget -replace '^0x[0-9a-fA-F]+,', ''
+    # w32tm /query /source returns format: "server,0xFlags" (single) or "server,0xF peer2,0xF" (multi, space-separated)
+    # Split on spaces first to isolate the first peer, then strip the ,0xNN flag suffix
+    $ntpTarget = ($ntpTarget -split '\s+')[0].Trim()
+    $ntpTarget = $ntpTarget -replace ',0x[0-9a-fA-F]+$', ''
     $ntpTarget = $ntpTarget.Trim()
 
     if (-not [string]::IsNullOrWhiteSpace($ntpTarget) -and $ntpTarget -ne 'Local CMOS Clock' -and $ntpTarget -ne 'Free-running System Clock') {
         try {
             $stripOutput = & w32tm /stripchart /computer:$ntpTarget /samples:1 /dataonly 2>&1
             $stripText = $stripOutput | Out-String
-            # Parse offset from output lines like: "22:15:00, +00.4218632s"
+            # Parse offset from output lines like: "22:15:00, +00.4218632s" (or comma decimal on European locales)
             $lines = $stripText -split "`n"
             foreach ($line in $lines) {
                 $trimmed = $line.Trim()
-                if ($trimmed -match '[+-]\d+\.\d+s') {
-                    if ($trimmed -match '([+-]\d+\.\d+)s') {
-                        $offsetSeconds = [double]$Matches[1]
-                        $offsetMeasured = $true
-                        break
-                    }
+                if ($trimmed -match '([+-]\d+(?:[\.,]\d+)?)s') {
+                    $rawStr = $Matches[1].Replace(',', '.')
+                    $offsetSeconds = [double]::Parse($rawStr, [System.Globalization.CultureInfo]::InvariantCulture)
+                    $offsetMeasured = $true
+                    break
                 }
             }
         } catch { }
@@ -370,7 +367,7 @@ foreach ($rc in $rootCerts) {
         Write-Output "       Purpose: $purpose."
         Write-Output '       Windows Update signature validation will fail with certificate chain errors.'
         Write-Output '       Common HRESULTs: 0x800B0109 (chain error), 0x80096004 (trust failure).'
-        Write-Output '       Fix: certutil -generateSSTFromWU roots.sst && certutil -addstore root roots.sst'
+        Write-Output '       Fix: certutil -generateSSTFromWU roots.sst && certutil -addstore -f root roots.sst'
         $issueCount++
     } else {
         $expiry = $found.NotAfter
@@ -380,7 +377,7 @@ foreach ($rc in $rootCerts) {
             Write-Output "[!!]  $certName"
             Write-Output "       EXPIRED on $($expiry.ToString('yyyy-MM-dd'))."
             Write-Output '       WU signature validation will fail. Certificate chain cannot be verified.'
-            Write-Output '       Fix: certutil -generateSSTFromWU roots.sst && certutil -addstore root roots.sst'
+            Write-Output '       Fix: certutil -generateSSTFromWU roots.sst && certutil -addstore -f root roots.sst'
             $issueCount++
         } else {
             $daysToExpiry = [math]::Floor(($expiry - (Get-Date)).TotalDays)

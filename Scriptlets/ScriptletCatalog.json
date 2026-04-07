@@ -310,8 +310,8 @@
       "time",
       "diagnostic"
     ],
-    "Version": "1.0",
-    "Notes": "Read-only diagnostic. Checks 6 areas: Schannel TLS 1.2 (Client/Server subkeys + legacy protocol detection), .NET Framework SchUseStrongCrypto and SystemDefaultTlsVersions (64-bit + WOW6432Node), WinHTTP DefaultSecureProtocols bitmask, system clock offset via w32tm stripchart, Microsoft Root CA 2011 + ECC 2017 certificate validation, and FIPS algorithm policy. Does not check network connectivity (WU003 scope) or component health (WU005 scope).",
+    "Version": "1.2",
+    "Notes": "v1.2: Fixed culture-dependent w32tm offset parsing -- regex now accepts both dot and comma decimal separators, uses InvariantCulture for [double] parsing (prevents false CRITICAL DRIFT alerts on European locales where dot is thousands separator), added -f flag to certutil -addstore remediation commands. v1.1: Fixed NTP source format parsing and whole-second offset regex. v1.0: Read-only diagnostic.",
     "ScriptFile": "WU004_WUTlsCertCheck.ps1"
   },
   {
