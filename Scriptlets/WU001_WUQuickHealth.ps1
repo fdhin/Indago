@@ -1,6 +1,6 @@
 # WU001_WUQuickHealth.ps1
 # Scriptlet: WU001 - Windows Update Quick Health Check
-# Context: System | Version: 2.0
+# Context: System | Version: 2.2
 
 $ErrorActionPreference = 'SilentlyContinue'
 $findings = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -14,36 +14,36 @@ $services = @(
     @{ Name = 'UsoSvc';   Display = 'Update Orchestrator' }
 )
 foreach ($svc in $services) {
-    $s = Get-Service -Name $svc.Name -ErrorAction SilentlyContinue
+    $s = Get-CimInstance -ClassName Win32_Service -Filter "Name='$($svc.Name)'" -ErrorAction SilentlyContinue
     if ($null -eq $s) {
         $findings.Add([PSCustomObject]@{
             Check  = "$($svc.Display) ($($svc.Name))"
             Status = 'ISSUE'
             Detail = 'Service not found. This component may not be installed.'
         })
-    } elseif ($s.Status -eq 'Running') {
+    } elseif ($s.State -eq 'Running') {
         $findings.Add([PSCustomObject]@{
             Check  = "$($svc.Display) ($($svc.Name))"
             Status = 'OK'
-            Detail = "Running, start type: $($s.StartType). Operational."
+            Detail = "Running, start mode: $($s.StartMode). Operational."
         })
-    } elseif ($s.StartType -eq 'Disabled') {
+    } elseif ($s.StartMode -eq 'Disabled') {
         $findings.Add([PSCustomObject]@{
             Check  = "$($svc.Display) ($($svc.Name))"
             Status = 'ISSUE'
             Detail = "Disabled. Updates cannot function without this service. Run WU009 WUServiceReset."
         })
-    } elseif ($s.StartType -match 'Auto') {
+    } elseif ($s.StartMode -eq 'Auto') {
         $findings.Add([PSCustomObject]@{
             Check  = "$($svc.Display) ($($svc.Name))"
             Status = 'ISSUE'
-            Detail = "Stopped but start type is $($s.StartType) -- should be running. Run WU009 WUServiceReset."
+            Detail = "Stopped but start mode is Auto -- should be running. Run WU009 WUServiceReset."
         })
     } else {
         $findings.Add([PSCustomObject]@{
             Check  = "$($svc.Display) ($($svc.Name))"
             Status = 'OK'
-            Detail = "Stopped, start type: $($s.StartType). This is expected -- service starts on demand when updates are needed."
+            Detail = "Stopped, start mode: $($s.StartMode). This is expected -- service starts on demand when updates are needed."
         })
     }
 }
@@ -132,6 +132,9 @@ $hresultMap['0x80244019'] = 'WSUS server rejected request (HTTP 503). WSUS may b
 $hresultMap['0x800705B4'] = 'Operation timed out. Service may be hung. Run WU009 WUServiceReset.'
 $hresultMap['0x80240017'] = 'Update not applicable to this system. Usually not a problem.'
 $hresultMap['0x80070BC9'] = 'Reboot required before this update can install. Reboot and retry.'
+$hresultMap['0x80240020'] = 'Windows Update agent is busy. Retry after a few minutes.'
+$hresultMap['0x8024402F'] = 'Proxy or authentication issue. Check proxy config. Run WU003 WUNetworkCheck.'
+$hresultMap['0xC1900101'] = 'Feature update rollback (driver or compatibility issue). Check SetupDiag output.'
 
 # -- Check 4 & 6: WU History --
 $lastSuccessDate = $null
@@ -153,15 +156,23 @@ try {
                     $lastSuccessDate = $e.Date
                 }
                 if ($e.Date -ge $cutoff) { $successCount++ }
-            } elseif ($e.ResultCode -ge 3 -and $e.Date -ge $cutoff) {
+            } elseif ($e.ResultCode -eq 3 -and $e.Date -ge $cutoff) {
+                # ResultCode 3 = Succeeded with errors (partial success, not a failure)
+                $successCount++
+                if ($null -eq $lastSuccessDate -or $e.Date -gt $lastSuccessDate) {
+                    $lastSuccessDate = $e.Date
+                }
+            } elseif ($e.ResultCode -ge 4 -and $e.Date -ge $cutoff) {
                 $failCount++
                 if ($failureList.Count -lt 5) {
-                    $hr = '0x{0:X8}' -f $e.HResult
+                    $hr = '0x{0:X8}' -f ([uint32]$e.HResult)
                     $meaning = $hresultMap[$hr]
                     if ([string]::IsNullOrWhiteSpace($meaning)) {
                         $meaning = "Unknown error. Search $hr on learn.microsoft.com"
                     }
-                    $title = if ($e.Title.Length -gt 80) { $e.Title.Substring(0, 77) + '...' } else { $e.Title }
+                    $titleRaw = $e.Title
+                    if ([string]::IsNullOrEmpty($titleRaw)) { $titleRaw = '<no title>' }
+                    $title = if ($titleRaw.Length -gt 80) { $titleRaw.Substring(0, 77) + '...' } else { $titleRaw }
                     $failureList.Add([PSCustomObject]@{
                         Date    = $e.Date.ToString('yyyy-MM-dd')
                         HR      = $hr

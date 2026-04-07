@@ -1,6 +1,6 @@
 # WU003_WUNetworkCheck.ps1
 # Scriptlet: WU003 - Network & Connectivity Diagnostics
-# Context: System | Version: 1.0
+# Context: System | Version: 1.2
 
 $ErrorActionPreference = 'SilentlyContinue'
 Write-Output ''
@@ -37,9 +37,6 @@ if (-not [string]::IsNullOrWhiteSpace($wsusUrl)) {
         $uri = [System.Uri]$wsusUrl
         $wsusHost = $uri.Host
         $wsusPort = $uri.Port
-        if ($wsusPort -le 0) {
-            if ($uri.Scheme -eq 'https') { $wsusPort = 8531 } else { $wsusPort = 8530 }
-        }
         $endpoints += @{ Host = $wsusHost; Port = $wsusPort; Label = "WSUS server ($wsusUrl)" }
     } catch { }
 }
@@ -109,16 +106,19 @@ foreach ($ep in $resolvedEndpoints) {
     }
 
     $tcpOk = $false
+    $tcp = $null
     try {
         $tcp = New-Object System.Net.Sockets.TcpClient
         $ar = $tcp.BeginConnect($hostName, $port, $null, $null)
         $waited = $ar.AsyncWaitHandle.WaitOne($connectTimeoutMs, $false)
-        if ($waited -and $tcp.Connected) {
+        if ($waited) {
+            $tcp.EndConnect($ar)
             $tcpOk = $true
         }
-        $tcp.Close()
     } catch {
-        try { $tcp.Close() } catch { }
+        $tcpOk = $false
+    } finally {
+        if ($null -ne $tcp) { try { $tcp.Close() } catch { } }
     }
 
     if ($tcpOk) {
@@ -166,20 +166,20 @@ if ([string]::IsNullOrWhiteSpace($winHttpText)) {
     $lines = $winHttpText -split "`n"
     foreach ($line in $lines) {
         $trimmed = $line.Trim()
-        # Look for lines containing proxy server info (hostname:port or IP:port pattern)
-        if ($trimmed -match ':\s*\S+:\d+') {
-            if (-not $hasProxy) {
-                $hasProxy = $true
-                # Extract the proxy value after the colon
-                if ($trimmed -match ':\s*(.+)$') {
-                    $proxyLine = $Matches[1].Trim()
+        # Match lines with label: value pattern
+        if ($trimmed -match ':\s*(.+)$') {
+            $val = $Matches[1].Trim()
+            if ($val -match '\S+:\d+') {
+                # Value contains host:port -- this is the proxy server
+                if (-not $hasProxy) {
+                    $hasProxy = $true
+                    $proxyLine = $val
                 }
-            }
-        }
-        # Look for bypass list (contains semicolons or <local> typically)
-        if ($trimmed -match ':\s*.*[;<]') {
-            if ($trimmed -match ':\s*(.+)$') {
-                $bypassLine = $Matches[1].Trim()
+            } elseif ($hasProxy -and -not [string]::IsNullOrWhiteSpace($val)) {
+                # After finding proxy, the next non-empty label:value line is the bypass list
+                if ([string]::IsNullOrWhiteSpace($bypassLine)) {
+                    $bypassLine = $val
+                }
             }
         }
     }
@@ -207,11 +207,13 @@ if ([string]::IsNullOrWhiteSpace($winHttpText)) {
 Write-Output ''
 
 # ---------------------------------------------------------------
-# Check 4: System Proxy Registry (HKLM)
+# Check 4: WinINet Proxy (SYSTEM user hive)
 # ---------------------------------------------------------------
-Write-Output '--- System Proxy (HKLM) ---'
+Write-Output '--- WinINet Proxy (SYSTEM) ---'
 
-$sysProxyPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings'
+# WUA runs as SYSTEM and reads proxy from the SYSTEM user hive, not HKLM.
+# HKLM Internet Settings are ignored unless ProxySettingsPerUser = 0 (GPO).
+$sysProxyPath = 'Registry::HKEY_USERS\S-1-5-18\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
 $proxyEnabled = $null
 $proxyServer  = $null
 $proxyOverride = $null
@@ -232,23 +234,23 @@ try {
 } catch { }
 
 if ($null -eq $proxyEnabled -or $proxyEnabled -eq 0) {
-    Write-Output '[OK]  System Proxy (HKLM)'
-    Write-Output '       No system-level proxy configured (ProxyEnable is not set or 0).'
+    Write-Output '[OK]  WinINet Proxy (SYSTEM)'
+    Write-Output '       No proxy configured in the SYSTEM account hive (ProxyEnable is not set or 0).'
 } elseif ($proxyEnabled -eq 1) {
     if ([string]::IsNullOrWhiteSpace($proxyServer)) {
-        Write-Output '[!]   System Proxy (HKLM)'
+        Write-Output '[!]   WinINet Proxy (SYSTEM)'
         Write-Output '       ProxyEnable = 1 but no ProxyServer is defined.'
         Write-Output '       This is a broken configuration. Proxy is enabled with nowhere to route traffic.'
         $warnCount++
     } else {
         $bypassStr = if ([string]::IsNullOrWhiteSpace($proxyOverride)) { '(none)' } else { $proxyOverride }
-        Write-Output '[i]   System Proxy (HKLM)'
+        Write-Output '[i]   WinINet Proxy (SYSTEM)'
         Write-Output "       Proxy enabled: $proxyServer"
         Write-Output "       Bypass list: $bypassStr"
         Write-Output '       Verify the proxy allows traffic to *.windowsupdate.com and *.microsoft.com.'
     }
 } else {
-    Write-Output '[i]   System Proxy (HKLM)'
+    Write-Output '[i]   WinINet Proxy (SYSTEM)'
     Write-Output "       ProxyEnable = $proxyEnabled (unexpected value)."
 }
 
@@ -270,7 +272,7 @@ try {
 } catch { }
 
 # Check WPAD auto-detect via DefaultConnectionSettings binary blob
-$connectionsPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections'
+$connectionsPath = 'Registry::HKEY_USERS\S-1-5-18\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Connections'
 try {
     $connReg = Get-ItemProperty -Path $connectionsPath -ErrorAction Stop
     if ($null -ne $connReg -and ($connReg.PSObject.Properties.Name -contains 'DefaultConnectionSettings')) {
@@ -375,24 +377,30 @@ Write-Output ''
 # ---------------------------------------------------------------
 Write-Output '--- Metered Connection ---'
 
-$meteredFindings = [System.Collections.Generic.List[string]]::new()
+$meteredFindings = [System.Collections.Generic.List[PSCustomObject]]::new()
 
 # 7a: Check DefaultMediaCost registry for global metered settings
 $mediaCostPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\DefaultMediaCost'
 try {
     $mediaCostReg = Get-ItemProperty -Path $mediaCostPath -ErrorAction Stop
     if ($null -ne $mediaCostReg) {
-        # Cost values: 1 = Unrestricted, 2 = Fixed/Metered, 4 = Variable
+        # DefaultMediaCost values: 1 = Unrestricted/Unmetered, 2 = Metered
         if ($mediaCostReg.PSObject.Properties.Name -contains 'Ethernet') {
             $ethCost = [int]$mediaCostReg.Ethernet
             if ($ethCost -ge 2) {
-                $null = $meteredFindings.Add("Ethernet is globally marked as METERED (DefaultMediaCost = $ethCost). This is unusual for wired connections and will defer most updates.")
+                $null = $meteredFindings.Add([PSCustomObject]@{
+                    Severity = 'ISSUE'
+                    Message  = "Ethernet is globally marked as METERED (DefaultMediaCost = $ethCost). This is unusual for wired connections and will defer most updates."
+                })
             }
         }
         if ($mediaCostReg.PSObject.Properties.Name -contains 'WiFi') {
             $wifiCost = [int]$mediaCostReg.WiFi
             if ($wifiCost -ge 2) {
-                $null = $meteredFindings.Add("Wi-Fi is globally marked as METERED (DefaultMediaCost = $wifiCost). Windows will defer updates on Wi-Fi connections. This may be intentional for mobile hotspots.")
+                $null = $meteredFindings.Add([PSCustomObject]@{
+                    Severity = 'WARN'
+                    Message  = "Wi-Fi is globally marked as METERED (DefaultMediaCost = $wifiCost). Windows will defer updates on Wi-Fi connections. This may be intentional for mobile hotspots."
+                })
             }
         }
     }
@@ -408,7 +416,10 @@ try {
             $costStr = $costType.ToString()
             # Fixed or Variable = metered
             if ($costStr -eq 'Fixed' -or $costStr -eq 'Variable') {
-                $null = $meteredFindings.Add("Connection '$($cp.Name)' on $($cp.InterfaceAlias) is marked as METERED ($costStr). Windows will defer updates on this connection.")
+                $null = $meteredFindings.Add([PSCustomObject]@{
+                    Severity = 'WARN'
+                    Message  = "Connection '$($cp.Name)' on $($cp.InterfaceAlias) is marked as METERED ($costStr). Windows will defer updates on this connection."
+                })
             }
         }
     }
@@ -418,13 +429,12 @@ if ($meteredFindings.Count -eq 0) {
     Write-Output '[OK]  Metered Connection Status'
     Write-Output '       No metered connections detected. Updates will download normally.'
 } else {
-    foreach ($finding in $meteredFindings) {
-        # Ethernet metered is critical (unusual), Wi-Fi metered is warning (common)
-        if ($finding -like '*Ethernet*globally*') {
-            Write-Output "[!!]  $finding"
+    foreach ($mf in $meteredFindings) {
+        if ($mf.Severity -eq 'ISSUE') {
+            Write-Output "[!!]  $($mf.Message)"
             $issueCount++
         } else {
-            Write-Output "[!]   $finding"
+            Write-Output "[!]   $($mf.Message)"
             $warnCount++
         }
     }

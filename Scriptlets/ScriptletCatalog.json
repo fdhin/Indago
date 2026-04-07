@@ -20,8 +20,8 @@
       "diagnostic",
       "health"
     ],
-    "Version": "2.0",
-    "Notes": "v2.0: Complete rewrite replacing DiagnoseWindowsUpdate. Checks 4 core services (incl. UsoSvc), disk space (5/20 GB thresholds), 3 reboot signals (incl. Session Manager), WU history with 20-entry HRESULT translation table, SoftwareDistribution cache size, and last-success date. Read-only diagnostic.",
+    "Version": "2.2",
+    "Notes": "v2.2: Fixed ResultCode 3 (SucceededWithErrors) not updating lastSuccessDate causing Check 4/6 inconsistency, added [uint32] cast on HResult formatting to prevent negative Int32 producing 16-digit hex that breaks lookup table. v2.1: Fixed service check to use Get-CimInstance Win32_Service (StartMode) instead of Get-Service (StartType unavailable in PS 5.1), fixed ResultCode 3 being misclassified as failure, added null-safety for WU history Title property, added 3 HRESULT codes (0x80240020/0x8024402F/0xC1900101). v2.0: Complete rewrite. Read-only diagnostic.",
     "ScriptFile": "WU001_WUQuickHealth.ps1"
   },
   {
@@ -40,8 +40,8 @@
       "mdm",
       "diagnostic"
     ],
-    "Version": "1.0",
-    "Notes": "Read-only diagnostic. Audits 3 registry layers: GPO (HKLM Policies WindowsUpdate), MDM (PolicyManager current device Update), and UX (WindowsUpdate UX Settings). Includes WSUS TCP reachability (3s timeout), ExcludeWUDriversInQualityUpdate from both GPO and MDM, and MDMWinsOverGP split-brain detection.",
+    "Version": "1.2",
+    "Notes": "v1.2: Simplified WSUS port logic to use [System.Uri].Port directly (previous IsDefaultPort approach still caused false positives for http:// URLs without explicit ports), added TargetReleaseVersion to MDM version pinning check (completes the ProductVersion+TargetReleaseVersion pair). v1.1: Fixed TCP socket leak, IsDefaultPort, MDMWinsOverGP severity, integer 0 coercion in key count, InvariantCulture date parsing. v1.0: Read-only audit of GPO, MDM/Intune, and UX-level policy settings.",
     "ScriptFile": "WU002_WUPolicyAudit.ps1"
   },
   {
@@ -60,8 +60,8 @@
       "dns",
       "diagnostic"
     ],
-    "Version": "1.0",
-    "Notes": "Read-only network diagnostic. Tests 4 Microsoft Update endpoints + WSUS (if configured). Uses TcpClient with 5s timeout (not Invoke-WebRequest). Detects WinHTTP proxy via netsh, system proxy via HKLM registry, PAC/WPAD via AutoConfigURL and DefaultConnectionSettings blob. VPN detection via Get-NetAdapter keyword matching. Metered detection via DefaultMediaCost registry + Get-NetConnectionProfile. Does not check TLS/certs/clock (WU004 scope).",
+    "Version": "1.2",
+    "Notes": "v1.2: Fixed WinHTTP bypass list parsing (semicolon/bracket regex missed single-domain bypass lists causing false 'no bypass' warnings), fixed proxy and PAC checks to read SYSTEM user hive (S-1-5-18) instead of HKLM (WUA ignores HKLM proxy settings by default), corrected DefaultMediaCost comment. v1.1: Fixed TCP EndConnect, socket disposal, WSUS port, metered severity typing. v1.0: Read-only network diagnostic.",
     "ScriptFile": "WU003_WUNetworkCheck.ps1"
   },
   {

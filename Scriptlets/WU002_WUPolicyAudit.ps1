@@ -1,6 +1,6 @@
 # WU002_WUPolicyAudit.ps1
 # Scriptlet: WU002 - WU Policy & Configuration Audit
-# Context: System | Version: 1.0
+# Context: System | Version: 1.2
 
 $ErrorActionPreference = 'SilentlyContinue'
 $findings = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -22,16 +22,16 @@ if ([string]::IsNullOrWhiteSpace($wuServer)) {
 } else {
     $hasGPOKeys = $true
     if ($useWUServer -eq 1) {
-        $wsusReachable = $false; $wsusHost = $null; $wsusPort = 8530
+        $wsusReachable = $false; $wsusHost = $null; $wsusPort = 8530; $tcp = $null
         try {
-            $uri = [System.Uri]$wuServer; $wsusHost = $uri.Host
-            if ($uri.Port -gt 0) { $wsusPort = $uri.Port } elseif ($uri.Scheme -eq 'https') { $wsusPort = 8531 }
+            $uri = [System.Uri]$wuServer; $wsusHost = $uri.Host; $wsusPort = $uri.Port
             $tcp = New-Object System.Net.Sockets.TcpClient
             $ar = $tcp.BeginConnect($wsusHost, $wsusPort, $null, $null)
             $waited = $ar.AsyncWaitHandle.WaitOne(3000, $false)
             if ($waited -and $tcp.Connected) { $wsusReachable = $true }
-            $tcp.Close()
-        } catch { }
+        } catch { } finally {
+            if ($null -ne $tcp) { try { $tcp.Close() } catch { } }
+        }
         if ($wsusReachable) { $findings.Add([PSCustomObject]@{ Check = 'WSUS Server'; Status = 'OK'; Detail = "WSUS routing active. Server responds on ${wsusHost}:${wsusPort}. URL: $wuServer" }) }
         else { $findings.Add([PSCustomObject]@{ Check = 'WSUS Server'; Status = 'ISSUE'; Detail = "WSUS server configured but NOT responding on ${wsusHost}:${wsusPort}. All update scans will fail. URL: $wuServer" }) }
     } else {
@@ -89,7 +89,7 @@ if ($null -ne $ahStart -and $null -ne $ahEnd) {
 $pauseExpiry = Get-RegValue -Path $uxSettings -Name 'PauseUpdatesExpiryTime'
 if (-not [string]::IsNullOrWhiteSpace($pauseExpiry)) {
     try {
-        $expiryDate = [datetime]::Parse($pauseExpiry)
+        $expiryDate = [datetime]::Parse($pauseExpiry, [System.Globalization.CultureInfo]::InvariantCulture)
         if ($expiryDate -gt (Get-Date)) { $findings.Add([PSCustomObject]@{ Check = 'User-Initiated Pause'; Status = 'ISSUE'; Detail = "Updates paused via Settings UI. Pause expires: $($expiryDate.ToString('yyyy-MM-dd')). No updates will install until then." }) }
         else { $findings.Add([PSCustomObject]@{ Check = 'User-Initiated Pause'; Status = 'OK'; Detail = "A previous pause expired on $($expiryDate.ToString('yyyy-MM-dd')). Updates should resume normally." }) }
     } catch {
@@ -132,15 +132,21 @@ if ($mdmExists) {
     if (-not [string]::IsNullOrWhiteSpace($mdmPauseQuality)) { $findings.Add([PSCustomObject]@{ Check = 'Quality Update Pause (MDM)'; Status = 'ISSUE'; Detail = "Quality/security patches paused since $mdmPauseQuality. Security risk." }) }
     if (-not [string]::IsNullOrWhiteSpace($mdmPauseFeature)) { $findings.Add([PSCustomObject]@{ Check = 'Feature Update Pause (MDM)'; Status = 'WARN'; Detail = "Feature updates paused since $mdmPauseFeature." }) }
     if ($null -ne $mdmExcludeDrivers -and $mdmExcludeDrivers -eq 1) { $findings.Add([PSCustomObject]@{ Check = 'Driver Update Exclusion (MDM)'; Status = 'INFO'; Detail = 'ExcludeWUDriversInQualityUpdate = 1. Driver updates excluded from quality updates via MDM policy.' }) }
-    if (-not [string]::IsNullOrWhiteSpace($mdmProductVersion)) { $findings.Add([PSCustomObject]@{ Check = 'Target Product Version (MDM)'; Status = 'INFO'; Detail = "Device is pinned to OS version: $mdmProductVersion." }) }
-    $mdmKeyCount = @($mdmAllowAuto, $mdmDeferFeature, $mdmDeferQuality, $mdmPauseQuality, $mdmPauseFeature, $mdmExcludeDrivers, $mdmProductVersion) | Where-Object { $null -ne $_ -and $_ -ne '' }
+    $mdmTargetRelease = Get-RegValue -Path $mdmUpdate -Name 'TargetReleaseVersion'
+    if (-not [string]::IsNullOrWhiteSpace($mdmProductVersion) -or -not [string]::IsNullOrWhiteSpace($mdmTargetRelease)) {
+        $pinParts = [System.Collections.Generic.List[string]]::new()
+        if (-not [string]::IsNullOrWhiteSpace($mdmProductVersion)) { $pinParts.Add($mdmProductVersion) }
+        if (-not [string]::IsNullOrWhiteSpace($mdmTargetRelease)) { $pinParts.Add($mdmTargetRelease) }
+        $findings.Add([PSCustomObject]@{ Check = 'Target Product Version (MDM)'; Status = 'INFO'; Detail = "Device is pinned to OS version: $($pinParts -join ' '). Feature updates beyond this version will not be offered." })
+    }
+    $mdmKeyCount = @($mdmAllowAuto, $mdmDeferFeature, $mdmDeferQuality, $mdmPauseQuality, $mdmPauseFeature, $mdmExcludeDrivers, $mdmProductVersion, $mdmTargetRelease) | Where-Object { $null -ne $_ }
     if (@($mdmKeyCount).Count -eq 0) { $findings.Add([PSCustomObject]@{ Check = 'MDM Update Policy'; Status = 'INFO'; Detail = 'MDM PolicyManager path exists but no update-specific policies are configured.' }) }
 } else { $findings.Add([PSCustomObject]@{ Check = 'MDM Update Policy'; Status = 'INFO'; Detail = 'No MDM update policies detected. Device is not managed by Intune/MDM for Windows Update.' }) }
 
 if ($hasGPOKeys -and $hasMDMKeys) {
     $mdmWins = Get-RegValue -Path $mdmConflict -Name 'MDMWinsOverGP'
-    if ($null -ne $mdmWins -and $mdmWins -eq 1) { $findings.Add([PSCustomObject]@{ Check = 'GPO/MDM Conflict Resolution'; Status = 'WARN'; Detail = 'SPLIT-BRAIN: Both GPO and MDM are configuring Windows Update. MDMWinsOverGP = 1 -- MDM policies take precedence for Policy CSP settings. GPO settings for WU are being overridden.' }) }
-    else { $findings.Add([PSCustomObject]@{ Check = 'GPO/MDM Conflict Resolution'; Status = 'ISSUE'; Detail = 'SPLIT-BRAIN: Both GPO and MDM are configuring Windows Update. MDMWinsOverGP is NOT set -- there is NO guaranteed winner. This is a race condition causing unpredictable update behavior.' }) }
+    if ($null -ne $mdmWins -and $mdmWins -eq 1) { $findings.Add([PSCustomObject]@{ Check = 'GPO/MDM Conflict Resolution'; Status = 'INFO'; Detail = 'Both GPO and MDM are configuring Windows Update. MDMWinsOverGP = 1 -- MDM policies take precedence for Policy CSP settings. This is expected in co-management environments.' }) }
+    else { $findings.Add([PSCustomObject]@{ Check = 'GPO/MDM Conflict Resolution'; Status = 'WARN'; Detail = 'Both GPO and MDM are configuring Windows Update. MDMWinsOverGP is not set -- GPO takes precedence by default. If MDM policies appear ignored, set MDMWinsOverGP = 1 to give MDM priority.' }) }
 }
 
 Write-Output ''
