@@ -1,18 +1,19 @@
 # BL001_BLStatusSnapshot.ps1
 # Scriptlet: BL001 - BitLocker Status Snapshot
-# Context: System | Version: 1.0
+# Context: System | Version: 1.1
 
-$ErrorActionPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Continue'
+
 Write-Output ''
 Write-Output '=== BitLocker Status Snapshot ==='
 Write-Output ''
 
 $issueCount = 0
 $warnCount = 0
-$usedWmiFallback = $false
 
 # --- Check 1: Volume Encryption Status ---
 $blAvailable = $true
+$blError = $null
 $volumes = $null
 
 try {
@@ -26,9 +27,9 @@ try {
 if (-not $blAvailable) {
     # WMI fallback
     try {
-        $wmiVols = Get-CimInstance -Namespace root/CIMv2/Security/MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume -ErrorAction Stop
-        if ($null -ne $wmiVols) {
-            $usedWmiFallback = $true
+        $wmiVols = @(Get-CimInstance -Namespace root/CIMv2/Security/MicrosoftVolumeEncryption -ClassName Win32_EncryptableVolume -ErrorAction Stop)
+        if ($wmiVols.Count -gt 0) {
+            Write-Output '[i]   Using WMI fallback -- key protector details unavailable.'
             # Build a simplified volume list from WMI data
             $encMethodMap = @{
                 0 = 'None'
@@ -45,6 +46,7 @@ if (-not $blAvailable) {
                 2 = 'EncryptionInProgress'
                 3 = 'DecryptionInProgress'
                 4 = 'EncryptionPaused'
+                5 = 'DecryptionPaused'
             }
             $protStatusMap = @{
                 0 = 'Off'
@@ -52,7 +54,11 @@ if (-not $blAvailable) {
                 2 = 'Unknown'
             }
 
-            foreach ($wv in @($wmiVols)) {
+            # Filter out removable volumes (VolumeType 2 = Removable)
+            $fixedWmiVols = @($wmiVols | Where-Object { $_.VolumeType -ne 2 })
+            if ($fixedWmiVols.Count -eq 0) { $fixedWmiVols = @($wmiVols) }
+
+            foreach ($wv in $fixedWmiVols) {
                 $mp = $wv.DriveLetter
                 if ([string]::IsNullOrWhiteSpace($mp)) { continue }
 
@@ -69,30 +75,30 @@ if (-not $blAvailable) {
                     Write-Output "       Status: $convStr. Protection: $protStr. Method: $encStr."
                 } elseif ($conv -eq 1 -and $prot -eq 0) {
                     Write-Output "[!!]  Volume $mp (WMI)"
-                    Write-Output "       GHOST STATE -- Volume is encrypted but protection is OFF."
-                    Write-Output "       The encryption key is in the clear. Data is not actually protected."
-                    Write-Output "       Run BL009 BLTpmRemediation to bind a key protector."
+                    Write-Output '       GHOST STATE -- Volume is encrypted but protection is OFF.'
+                    Write-Output '       The encryption key is in the clear. Data is not actually protected.'
+                    Write-Output '       Run BL009 BLTpmRemediation to bind a key protector.'
                     $issueCount++
                 } elseif ($conv -eq 0) {
                     Write-Output "[!!]  Volume $mp (WMI)"
                     Write-Output "       Status: $convStr. Volume is not encrypted."
-                    Write-Output "       Run BL002 BLTpmHealth to check encryption readiness."
+                    Write-Output '       Run BL002 BLTpmHealth to check encryption readiness.'
                     $issueCount++
                 } elseif ($conv -eq 2) {
                     $pct = 'unknown'
                     try {
-                        $cpResult = $wv | Invoke-CimMethod -MethodName GetConversionStatus -ErrorAction Stop
+                        $cpResult = Invoke-CimMethod -InputObject $wv -MethodName GetConversionStatus -ErrorAction Stop
                         if ($null -ne $cpResult -and $null -ne $cpResult.EncryptionPercentage) {
                             $pct = "$($cpResult.EncryptionPercentage)%"
                         }
                     } catch { }
                     Write-Output "[i]   Volume $mp (WMI)"
                     Write-Output "       Status: $convStr ($pct). Encryption is in progress."
-                    Write-Output "       This is normal during initial provisioning. Re-run BL001 to check progress."
-                } elseif ($conv -eq 4) {
+                    Write-Output '       This is normal during initial provisioning. Re-run BL001 to check progress.'
+                } elseif ($conv -eq 4 -or $conv -eq 5) {
                     Write-Output "[!!]  Volume $mp (WMI)"
-                    Write-Output "       Status: $convStr. Encryption was interrupted and needs intervention."
-                    Write-Output "       Run BL009 BLTpmRemediation to resume or restart."
+                    Write-Output "       Status: $convStr. Operation was interrupted and needs intervention."
+                    Write-Output '       Run BL009 BLTpmRemediation to resume or restart.'
                     $issueCount++
                 } elseif ($conv -eq 3) {
                     Write-Output "[!]   Volume $mp (WMI)"
@@ -155,6 +161,13 @@ if ($null -ne $volumes) {
         $fixedVols = @($volumes)
     }
 
+    if ($fixedVols.Count -eq 0) {
+        Write-Output '[!!]  BitLocker Status'
+        Write-Output '       Get-BitLockerVolume returned no volumes.'
+        Write-Output '       No encryptable volumes found. Run BL002 BLTpmHealth to investigate.'
+        $issueCount++
+    }
+
     foreach ($vol in $fixedVols) {
         $mp       = $vol.MountPoint
         $vType    = $vol.VolumeType
@@ -198,32 +211,39 @@ if ($null -ne $volumes) {
             }
         } elseif ($vStatus -eq 'FullyEncrypted' -and $protStat -eq 'Off') {
             Write-Output "[!!]  Volume $mp"
-            Write-Output "       GHOST STATE -- Volume is encrypted but protection is OFF."
-            Write-Output "       The encryption key is in the clear. Data is not actually protected."
+            Write-Output '       GHOST STATE -- Volume is encrypted but protection is OFF.'
+            Write-Output '       The encryption key is in the clear. Data is not actually protected.'
             Write-Output "       $detail2"
-            Write-Output "       Run BL009 BLTpmRemediation to bind a key protector."
+            Write-Output '       Run BL009 BLTpmRemediation to bind a key protector.'
             $issueCount++
         } elseif ($vStatus -eq 'FullyDecrypted') {
             Write-Output "[!!]  Volume $mp"
             Write-Output "       Not encrypted. $detail2"
-            Write-Output "       Run BL002 BLTpmHealth to check encryption readiness."
+            Write-Output '       Run BL002 BLTpmHealth to check encryption readiness.'
             $issueCount++
         } elseif ($vStatus -eq 'EncryptionInProgress') {
             Write-Output "[i]   Volume $mp"
             Write-Output "       Encryption in progress ($pct%). $detail2"
-            Write-Output "       This is normal during initial provisioning. Re-run BL001 to check progress."
+            Write-Output '       This is normal during initial provisioning. Re-run BL001 to check progress.'
         } elseif ($vStatus -eq 'EncryptionPaused') {
             Write-Output "[!!]  Volume $mp"
             Write-Output "       Encryption PAUSED at $pct%. Encryption was interrupted and needs intervention."
             Write-Output "       $detail2"
-            Write-Output "       Run BL009 BLTpmRemediation to resume or restart."
+            Write-Output '       Run BL009 BLTpmRemediation to resume or restart.'
             $issueCount++
         } elseif ($vStatus -eq 'DecryptionInProgress') {
             Write-Output "[!]   Volume $mp"
             Write-Output "       Decryption in progress ($pct%). Someone or something is actively decrypting."
             Write-Output "       $detail2"
             $warnCount++
-        } elseif ($vStatus -eq 'EncryptionSuspended' -or $protStat -eq 'Off') {
+        } elseif ($vStatus -eq 'DecryptionPaused') {
+            Write-Output "[!!]  Volume $mp"
+            Write-Output "       Decryption PAUSED at $pct%. Operation was interrupted."
+            Write-Output "       $detail2"
+            Write-Output '       Run BL009 BLTpmRemediation to resume or restart.'
+            $issueCount++
+        } elseif ($protStat -eq 'Off') {
+            # Protection suspended on a volume that is not FullyEncrypted (ghost state handled above)
             Write-Output "[!]   Volume $mp"
             Write-Output "       Protection suspended. $detail1"
             Write-Output "       $detail2"
@@ -268,41 +288,36 @@ $warningIds = @(778, 805, 810, 770, 771)
 
 try {
     $lastEvent = Get-WinEvent -LogName 'Microsoft-Windows-BitLocker/BitLocker Management' -MaxEvents 1 -ErrorAction Stop
-    if ($null -ne $lastEvent) {
-        $evId = $lastEvent.Id
-        $evTime = $lastEvent.TimeCreated.ToString('yyyy-MM-dd HH:mm')
-        $evMsg = $lastEvent.Message
-        if ($null -ne $evMsg -and $evMsg.Length -gt 200) {
-            $evMsg = $evMsg.Substring(0, 200) + '...'
-        }
+    $evId = $lastEvent.Id
+    $evTime = $lastEvent.TimeCreated.ToString('yyyy-MM-dd HH:mm')
+    $evMsg = $lastEvent.Message
+    if ($null -ne $evMsg -and $evMsg.Length -gt 200) {
+        $evMsg = $evMsg.Substring(0, 200) + '...'
+    }
 
-        $evSummary = if ($eventIdMap.ContainsKey($evId)) { $eventIdMap[$evId] } else { '' }
+    $evSummary = if ($eventIdMap.ContainsKey($evId)) { $eventIdMap[$evId] } else { '' }
 
-        if ($failureIds -contains $evId) {
-            Write-Output "[!!]  Last BitLocker Event (ID $evId, $evTime)"
-            if ($evSummary -ne '') {
-                Write-Output "       $evSummary"
-            }
-            Write-Output "       $evMsg"
-            Write-Output '       Run BL007 BLEventAnalysis for the full failure timeline.'
-            $issueCount++
-        } elseif ($warningIds -contains $evId) {
-            Write-Output "[!]   Last BitLocker Event (ID $evId, $evTime)"
-            if ($evSummary -ne '') {
-                Write-Output "       $evSummary"
-            }
-            Write-Output "       $evMsg"
-            $warnCount++
-        } else {
-            Write-Output "[OK]  Last BitLocker Event (ID $evId, $evTime)"
-            if ($evSummary -ne '') {
-                Write-Output "       $evSummary"
-            }
-            Write-Output "       $evMsg"
+    if ($failureIds -contains $evId) {
+        Write-Output "[!!]  Last BitLocker Event (ID $evId, $evTime)"
+        if ($evSummary -ne '') {
+            Write-Output "       $evSummary"
         }
+        Write-Output "       $evMsg"
+        Write-Output '       Run BL007 BLEventAnalysis for the full failure timeline.'
+        $issueCount++
+    } elseif ($warningIds -contains $evId) {
+        Write-Output "[!]   Last BitLocker Event (ID $evId, $evTime)"
+        if ($evSummary -ne '') {
+            Write-Output "       $evSummary"
+        }
+        Write-Output "       $evMsg"
+        $warnCount++
     } else {
-        Write-Output '[i]   Last BitLocker Event'
-        Write-Output '       No events found. Encryption may never have been attempted on this machine.'
+        Write-Output "[OK]  Last BitLocker Event (ID $evId, $evTime)"
+        if ($evSummary -ne '') {
+            Write-Output "       $evSummary"
+        }
+        Write-Output "       $evMsg"
     }
 } catch {
     $fqeid = $_.FullyQualifiedErrorId
@@ -341,9 +356,12 @@ if ($null -eq $bdesvc) {
     # Verify BDESvc SDDL for the Removable Drive "Access is denied" bug
     try {
         $scOut = & sc.exe sdshow bdesvc 2>&1
-        $sddl = $scOut -join ''
-        # Look for the 'IU' (Interactive) identity which incorrectly replaces 'AU' (Authenticated Users)
-        if ($sddl -match ';;;IU') {
+        # Filter for SDDL line only (starts with D:, O:, G:, or S:), skip sc.exe header text
+        $sddlLine = $scOut | Where-Object { "$_" -match '^[DOGS]:' }
+        $sddl = ($sddlLine | ForEach-Object { "$_" }) -join ''
+
+        # The specific bug: Interactive (IU) replacing Authenticated Users (AU)
+        if ($sddl -match '\(A;;[^)]*;;;IU\)' -and $sddl -notmatch '\(A;;[^)]*;;;AU\)') {
             Write-Output ''
             Write-Output '[!!]  BitLocker Service (BDESVC) -- Security Descriptor Bug'
             Write-Output '       The BDESvc security descriptor contains INTERACTIVE (IU) instead of Authenticated Users (AU).'

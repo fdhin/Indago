@@ -1,8 +1,8 @@
 # BL002_BLTpmHealth.ps1
 # Scriptlet: BL002 - TPM Health & Readiness
-# Context: System | Version: 1.0
+# Context: System | Version: 1.1
 
-$ErrorActionPreference = 'SilentlyContinue'
+$ErrorActionPreference = 'Continue'
 Write-Output ''
 Write-Output '=== TPM Health & Readiness ==='
 Write-Output ''
@@ -29,10 +29,11 @@ if (-not $tpmOK) {
     # Fallback: Win32_Tpm WMI class (language-independent, no text parsing)
     $wmiTpmFb = $null
     try {
-        $wmiTpmFb = Get-CimInstance -Namespace 'ROOT\CIMv2\Security\MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction Stop
+        $wmiTpmFb = @(Get-CimInstance -Namespace 'ROOT\CIMv2\Security\MicrosoftTpm' -ClassName Win32_Tpm -ErrorAction Stop)
     } catch { }
 
-    if ($null -ne $wmiTpmFb) {
+    if ($null -ne $wmiTpmFb -and $wmiTpmFb.Count -gt 0) {
+        $wmiTpmFb = $wmiTpmFb[0]
         $usedFallback = $true
         $fbPresent = $false
         $fbVersion = ''
@@ -52,7 +53,7 @@ if (-not $tpmOK) {
 
         # Check enabled state
         try {
-            $enabledResult = $wmiTpmFb | Invoke-CimMethod -MethodName 'IsEnabled' -ErrorAction Stop
+            $enabledResult = Invoke-CimMethod -InputObject $wmiTpmFb -MethodName 'IsEnabled' -ErrorAction Stop
             if ($enabledResult -and $enabledResult.ReturnValue -eq 0) {
                 if ($enabledResult.IsEnabled) { $fbPresent = $true }
             }
@@ -60,7 +61,7 @@ if (-not $tpmOK) {
 
         # Check initialization (ownership)
         try {
-            $ownedResult = $wmiTpmFb | Invoke-CimMethod -MethodName 'IsOwned' -ErrorAction Stop
+            $ownedResult = Invoke-CimMethod -InputObject $wmiTpmFb -MethodName 'IsOwned' -ErrorAction Stop
             if ($ownedResult -and $ownedResult.ReturnValue -eq 0) {
                 $fbInit = $ownedResult.IsOwned
             }
@@ -68,7 +69,7 @@ if (-not $tpmOK) {
 
         # Check lockout
         try {
-            $lockResult = $wmiTpmFb | Invoke-CimMethod -MethodName 'IsLockedOut' -ErrorAction Stop
+            $lockResult = Invoke-CimMethod -InputObject $wmiTpmFb -MethodName 'IsLockedOut' -ErrorAction Stop
             if ($lockResult -and $lockResult.ReturnValue -eq 0) {
                 $fbLocked = $lockResult.IsLockedOut
             }
@@ -306,11 +307,29 @@ if ($null -ne $tpmObj) {
     try {
         $mfgVerFull = $tpmObj.ManufacturerVersionFull20
     } catch { }
+    # Fallback: ManufacturerIdTxt can be empty on some OEMs/non-English systems.
+    # Map the numeric ManufacturerId to the 3-letter vendor code.
+    if ([string]::IsNullOrWhiteSpace($mfgId) -and $null -ne $tpmObj.ManufacturerId) {
+        $mfgIdHex = "0x{0:X8}" -f $tpmObj.ManufacturerId
+        $knownMfg = @{
+            '0x49465800' = 'IFX'   # Infineon
+            '0x53544D20' = 'STM'   # STMicroelectronics
+            '0x4E544300' = 'NTC'   # Nuvoton
+            '0x524F4343' = 'ROCC'  # Futurex
+            '0x414D4400' = 'AMD'   # AMD
+            '0x494E5443' = 'INTC'  # Intel
+        }
+        if ($knownMfg.ContainsKey($mfgIdHex)) {
+            $mfgId = $knownMfg[$mfgIdHex]
+        } else {
+            $mfgId = $mfgIdHex
+        }
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($mfgId)) {
     Write-Output '[i]   TPM Manufacturer'
-    Write-Output '       ManufacturerIdTxt is empty. Unable to identify TPM vendor.'
+    Write-Output '       Unable to identify TPM vendor. Manufacturer ID not available.'
     Write-Output '       Firmware vulnerability check skipped.'
 } else {
     $vulnFound = $false
@@ -408,9 +427,15 @@ if ([string]::IsNullOrWhiteSpace($mfgId)) {
         }
 
         if ($verParts.Count -ge 2) {
+            # Exact match (7.2.4.1) = safe. Greater = safe. Less = vulnerable.
+            $isVulnerable = $true
             for ($vi = 0; $vi -lt 4; $vi++) {
-                if ($curVer[$vi] -lt $safeVer[$vi]) { $isVulnerable = $true; break }
-                if ($curVer[$vi] -gt $safeVer[$vi]) { break }
+                if ($curVer[$vi] -gt $safeVer[$vi]) { $isVulnerable = $false; break }
+                if ($curVer[$vi] -lt $safeVer[$vi]) { break }
+            }
+            # If loop completed without breaking, all parts were equal = safe
+            if ($curVer[0] -eq $safeVer[0] -and $curVer[1] -eq $safeVer[1] -and $curVer[2] -eq $safeVer[2] -and $curVer[3] -eq $safeVer[3]) {
+                $isVulnerable = $false
             }
         }
 
@@ -459,7 +484,9 @@ if ($null -ne $tpmObj) {
                     $totalHeal = [TimeSpan]::FromTicks($lockHealTime.Ticks * $lockCount)
                     $healHours = [Math]::Round($totalHeal.TotalHours, 1)
                     Write-Output "       Heal time per decrement: $healStr."
-                    Write-Output "       Estimated total heal: $healHours hours of CONTINUOUS powered-on time."
+                    Write-Output "       Estimated total heal: ~$healHours hours of CONTINUOUS powered-on time."
+                    Write-Output '       NOTE: This is a rough estimate. Some TPM vendors use exponential backoff,'
+                    Write-Output '       which means actual heal time may differ. Shutdowns pause the timer.'
                 } catch {
                     Write-Output "       LockoutHealTime: $healStr."
                 }
@@ -522,12 +549,12 @@ try {
 } catch { }
 
 if ($null -eq $tbsSvc) {
-    if ($tpmOK) {
-        # Get-Tpm succeeded, so TPM operations work despite missing service.
-        # Common on virtual machines (e.g., VMware vTPM).
+    if ($tpmOK -or ($usedFallback -and $tpmPresent)) {
+        # Get-Tpm or WMI confirmed TPM is present/functional despite missing service.
+        # Common on virtual machines (e.g., VMware vTPM, Hyper-V Gen2).
         Write-Output '[i]   TPM Base Services (TBS)'
-        Write-Output '       TBS service not found as standalone SCM entry, but TPM operations succeeded.'
-        Write-Output '       On some Windows builds the TBS runs as a kernel-managed driver. No action needed.'
+        Write-Output '       TBS service not found as standalone SCM entry, but TPM appears functional.'
+        Write-Output '       Common in virtualized or embedded environments. No action needed.'
     } else {
         Write-Output '[!!]  TPM Base Services (TBS)'
         Write-Output '       TBS service not found. TPM driver stack may be missing.'
