@@ -20,9 +20,13 @@ Write-Output '=== Intune Compliance Sync ==='
 Write-Output ''
 
 try {
-    Start-Process -FilePath $imePath -ArgumentList 'intunemanagementextension://synccompliance'
-    Write-Output '[OK] Compliance sync triggered successfully.'
-    Write-Output '     The device will evaluate compliance policies shortly.'
+    $proc = Start-Process -FilePath $imePath -ArgumentList 'intunemanagementextension://synccompliance' -PassThru
+    if ($null -ne $proc) {
+        Write-Output '[OK] Compliance sync triggered successfully.'
+        Write-Output '     The device will evaluate compliance policies shortly.'
+    } else {
+        Write-Output '[ERR] Start-Process returned no process object. Sync may not have triggered.'
+    }
 }
 catch {
     Write-Output "[ERR] Failed to trigger compliance sync: $($_.Exception.Message)"
