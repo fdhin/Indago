@@ -1,6 +1,6 @@
 # WU007_WUEnvironmentAudit.ps1
 # Scriptlet: WU007 - Windows Update Agent & Environment Audit
-# Context: System | Version: 1.2
+# Context: System | Version: 1.3
 
 $ErrorActionPreference = 'SilentlyContinue'
 $findings = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -239,27 +239,38 @@ if ($osBuild -and $versionTable.ContainsKey($osBuild)) {
     $ver = $versionTable[$osBuild]
     $dispVer = if ($osDisplayVersion) { $osDisplayVersion } else { $ver.Display }
 
-    switch ($ver.Status) {
-        'OK' {
-            $findings.Add([PSCustomObject]@{
-                Check  = 'Build Eligibility'
-                Status = 'OK'
-                Detail = "Build $osBuild ($($ver.Product) $dispVer) is in service and receiving security updates. $($ver.Note)"
-            })
-        }
-        'EXT' {
-            $findings.Add([PSCustomObject]@{
-                Check  = 'Build Eligibility'
-                Status = 'WARN'
-                Detail = "Build $osBuild ($($ver.Product) $dispVer) -- $($ver.Note). Plan a feature update soon."
-            })
-        }
-        'EOS' {
-            $findings.Add([PSCustomObject]@{
-                Check  = 'Build Eligibility'
-                Status = 'ISSUE'
-                Detail = "Build $osBuild ($($ver.Product) $dispVer) is OUT OF SERVICE -- no longer receiving security updates. $($ver.Note). Feature update required immediately."
-            })
+    # LTSC/Server editions have independent lifecycles -- do not apply consumer EOS dates
+    $isLtscOrServer = $osEdition -and ($osEdition -match 'LTSC|LTSB|EnterpriseS|Server')
+
+    if ($isLtscOrServer -and $ver.Status -ne 'OK') {
+        $findings.Add([PSCustomObject]@{
+            Check  = 'Build Eligibility'
+            Status = 'INFO'
+            Detail = "Build $osBuild ($($ver.Product) $dispVer) -- LTSC/Server edition detected ('$osEdition'). Standard consumer/enterprise EOS dates do not apply. LTSC and Server follow independent 5-10 year lifecycles. Verify support status at https://learn.microsoft.com/lifecycle."
+        })
+    } else {
+        switch ($ver.Status) {
+            'OK' {
+                $findings.Add([PSCustomObject]@{
+                    Check  = 'Build Eligibility'
+                    Status = 'OK'
+                    Detail = "Build $osBuild ($($ver.Product) $dispVer) is in service and receiving security updates. $($ver.Note)"
+                })
+            }
+            'EXT' {
+                $findings.Add([PSCustomObject]@{
+                    Check  = 'Build Eligibility'
+                    Status = 'WARN'
+                    Detail = "Build $osBuild ($($ver.Product) $dispVer) -- $($ver.Note). Plan a feature update soon."
+                })
+            }
+            'EOS' {
+                $findings.Add([PSCustomObject]@{
+                    Check  = 'Build Eligibility'
+                    Status = 'ISSUE'
+                    Detail = "Build $osBuild ($($ver.Product) $dispVer) is OUT OF SERVICE -- no longer receiving security updates. $($ver.Note). Feature update required immediately."
+                })
+            }
         }
     }
 } elseif ($osBuild) {
@@ -337,7 +348,7 @@ foreach ($regPath in $uninstallPaths) {
                     $props = Get-ItemProperty -Path $item.PSPath -ErrorAction SilentlyContinue
                     if ($props.DisplayName) {
                         foreach ($term in $avSearchTerms) {
-                            if ($props.DisplayName -match [regex]::Escape($term)) {
+                            if ($props.DisplayName -match "\b$([regex]::Escape($term))\b") {
                                 if ($avProducts -notcontains $props.DisplayName) {
                                     $avProducts += $props.DisplayName
                                     $avDetected = $true
@@ -455,6 +466,7 @@ if ($intuneDetected) {
                     @{ Name = 'ConfigureDeadlineForQualityUpdates';  Label = 'QualityDeadline' }
                     @{ Name = 'ExcludeWUDriversInQualityUpdate';     Label = 'DriverExclude' }
                     @{ Name = 'ProductVersion';                      Label = 'TargetVersion' }
+                    @{ Name = 'TargetReleaseVersion';                 Label = 'TargetRelease' }
                 )
                 foreach ($cv in $checkValues) {
                     if ($mdmProps.PSObject.Properties[$cv.Name]) {
