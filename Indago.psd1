@@ -91,6 +91,7 @@ Key features:
         'Scriptlets\WU005_WUComponentHealth.ps1',
         'Scriptlets\WU006_WUEventTimeline.ps1',
         'Scriptlets\WU007_WUEnvironmentAudit.ps1',
+        'Scriptlets\WU008_WUDatastoreRepair.ps1',
         'Scriptlets\WU009_WUServiceReset.ps1',
         'Tests\Invoke-SelfTest.ps1',
         'Tests\Test-InvokeAsUser.ps1',
@@ -143,7 +144,7 @@ Complete Tier 5 diagnostic suite -- 30 scriptlets across 5 categories.
 - Get-IndagoHelp: Detailed help for each scriptlet with usage examples
 - Get-LoggedOnUser: Show the currently logged-on interactive user
 
-### Windows Update Suite (7 scriptlets)
+### Windows Update Suite (9 scriptlets)
 - WU001 WUQuickHealth: Service health, disk space, reboot state, failure history with HRESULT translation
 - WU002 WUComponentHealth: CBS store corruption, DISM health, pending.xml, SessionsPending backlog
 - WU003 WUNetworkCheck: WSUS/WUfB config, endpoint connectivity, proxy/PAC detection, metered connection
@@ -151,6 +152,8 @@ Complete Tier 5 diagnostic suite -- 30 scriptlets across 5 categories.
 - WU005 WUDriverConflict: Driver update isolation, WU driver policy, co-installer detection, rollback history
 - WU006 WUHistoryDump: Full update timeline with HRESULT translation, failure clustering, KB gap detection
 - WU007 WUEnvironmentAudit: Feature update eligibility, safeguard holds, edition/build/EOL, storage reserves
+- WU008 WUDatastoreRepair: DataStore.edb integrity, COM DLL re-registration, SDDL audit, BITS job cleanup, pending.xml
+- WU009 WUServiceReset: WU service dependency reset, cache rename, BITS queue purge, Winsock reset
 
 ### Defender Suite (7 scriptlets)
 - DEF001 DEFStatusTriage: Security Center AV decode, Defender mode, RTP, definitions, MDE sensor, signal gaps
