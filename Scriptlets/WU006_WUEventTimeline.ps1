@@ -1,6 +1,6 @@
 # WU006_WUEventTimeline.ps1
 # Scriptlet: WU006 - WU Event Log Timeline & HRESULT Deep Dive
-# Context: System | Version: 1.4
+# Context: System | Version: 1.5
 
 $ErrorActionPreference = 'SilentlyContinue'
 $findings = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -50,12 +50,12 @@ $wuFailureIds   = @(20, 25, 31)
 $wuSuccessIds   = @(19, 26, 42)
 $bitsFailureIds = @(60, 61, 64)
 $bitsSuccessIds = @(4)
-$scmEventIds    = @(7000, 7009, 7022, 7024, 7031, 7034, 7036, 7043)
+$scmEventIds    = @(7000, 7009, 7022, 7023, 7024, 7031, 7034, 7036, 7043)
 $wuServiceNames = @('wuauserv', 'BITS', 'TrustedInstaller', 'UsoSvc', 'Windows Update', 'Background Intelligent Transfer', 'Windows Modules Installer')
 
 # Dynamically add localized display names so SCM filtering works on non-English Windows
 $localWUNames = @(Get-CimInstance Win32_Service -Filter "Name='wuauserv' OR Name='BITS' OR Name='TrustedInstaller' OR Name='UsoSvc'" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty DisplayName)
-$searchNames = @($wuServiceNames) + @($localWUNames) | Select-Object -Unique
+$searchNames = @($wuServiceNames) + @($localWUNames) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
 
 # ============================================================
 # Collect events from all 3 sources
@@ -208,7 +208,7 @@ $infoCount     = $infoEvents.Count
 # Extract HRESULTs from failure events
 # ============================================================
 $hresultCounts = @{}
-$hresultRegex = '0x[0-9A-Fa-f]{8}'
+$hresultRegex = '(?i)\b0x[0-9a-f]{8}\b'
 
 foreach ($evt in $failureEvents) {
     $rawMsg = $evt.RawMsg
