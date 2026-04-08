@@ -1,6 +1,6 @@
 # WU006_WUEventTimeline.ps1
 # Scriptlet: WU006 - WU Event Log Timeline & HRESULT Deep Dive
-# Context: System | Version: 1.0
+# Context: System | Version: 1.2
 
 $ErrorActionPreference = 'SilentlyContinue'
 $findings = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -52,6 +52,10 @@ $bitsFailureIds = @(59, 60, 64)
 $bitsSuccessIds = @(4)
 $scmEventIds    = @(7031, 7034, 7036, 7043)
 $wuServiceNames = @('wuauserv', 'BITS', 'TrustedInstaller', 'UsoSvc', 'Windows Update', 'Background Intelligent Transfer', 'Windows Modules Installer')
+
+# Dynamically add localized display names so SCM filtering works on non-English Windows
+$localWUNames = @(Get-CimInstance Win32_Service -Filter "Name IN ('wuauserv','BITS','TrustedInstaller','UsoSvc')" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty DisplayName)
+$searchNames = @($wuServiceNames) + @($localWUNames) | Select-Object -Unique
 
 # ============================================================
 # Collect events from all 3 sources
@@ -133,7 +137,8 @@ try {
         $shortMsg = $shortMsg -replace '[\r\n]+', ' '
 
         $evtType = 'Info'
-        if ($evt.Level -le 2) { $evtType = 'Failure' }
+        if ($evt.Level -eq 1 -or $evt.Level -eq 2) { $evtType = 'Failure' }
+        elseif ($wuSuccessIds -contains $evt.Id) { $evtType = 'Success' }
 
         $allEvents.Add([PSCustomObject]@{
             Time    = $evt.TimeCreated
@@ -161,7 +166,7 @@ try {
 
         # Filter to WU-related services only
         $isWuService = $false
-        foreach ($svcName in $wuServiceNames) {
+        foreach ($svcName in $searchNames) {
             if ($msg -match [regex]::Escape($svcName)) {
                 $isWuService = $true
                 break
@@ -209,10 +214,14 @@ foreach ($evt in $failureEvents) {
     $rawMsg = $evt.RawMsg
     if ($null -eq $rawMsg -or $rawMsg.Length -eq 0) { continue }
     $matches2 = [regex]::Matches($rawMsg, $hresultRegex)
+    $codesInEvent = @{}
     foreach ($m in $matches2) {
-        $code = $m.Value.ToUpper()
+        $code = $m.Value.ToUpperInvariant() -replace '0X','0x'
         # Skip generic success/non-error codes
         if ($code -eq '0x00000000') { continue }
+        $codesInEvent[$code] = $true
+    }
+    foreach ($code in $codesInEvent.Keys) {
         if (-not $hresultCounts.ContainsKey($code)) {
             $hresultCounts[$code] = 0
         }
@@ -302,7 +311,7 @@ if ($totalEvents -gt 0) {
     }
 
     foreach ($evt in $displayEvents) {
-        $ts = $evt.Time.ToString('yyyy-MM-dd HH:mm')
+        $ts = if ($evt.Time) { $evt.Time.ToString('yyyy-MM-dd HH:mm') } else { '????-??-?? ??:??' }
         $src = $evt.Source
         $eid = $evt.EventId
 
@@ -319,7 +328,7 @@ if ($totalEvents -gt 0) {
 
         # Truncate message for single-line display
         $dispMsg = $evt.Message
-        if ($dispMsg.Length -gt 120) {
+        if ($dispMsg -and $dispMsg.Length -gt 120) {
             $dispMsg = $dispMsg.Substring(0, 117) + '...'
         }
 
