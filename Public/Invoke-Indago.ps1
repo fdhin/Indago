@@ -56,7 +56,7 @@ function Invoke-Indago {
 
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
-    #region No-name guard — show task list instead of deadlocking
+    #region No-name guard -- show task list instead of deadlocking
     if ([string]::IsNullOrWhiteSpace($Name)) {
         Write-Output 'Usage: Invoke-Indago -Name <TaskName>'
         Write-Output ''
@@ -86,22 +86,6 @@ function Invoke-Indago {
     Write-Verbose "Invoke-Indago: Found scriptlet $($task.Id) - $($task.DisplayName)"
     #endregion
 
-    #region Validate required parameters
-    if ($null -ne $task.Parameters) {
-        $paramNames = @($task.Parameters | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name)
-        foreach ($paramName in $paramNames) {
-            $paramDef = $task.Parameters.$paramName
-            if ($paramDef.Required -eq $true) {
-                $suppliedValue = (Get-Variable -Name $paramName -ValueOnly -ErrorAction SilentlyContinue)
-                if ([string]::IsNullOrWhiteSpace($suppliedValue)) {
-                    Write-Error "Scriptlet '$Name' requires -$paramName ($($paramDef.Name): $($paramDef.Description))"
-                    return
-                }
-            }
-        }
-    }
-    #endregion
-
     #region Determine execution context
     $execContext = $task.ExecutionContext
     if ($AsSystem.IsPresent) {
@@ -128,7 +112,7 @@ function Invoke-Indago {
         return
     }
 
-    # Resolve Param1-Param5
+    # Resolve Param1-Param5: apply catalog defaults for any omitted parameter
     $resolvedParams = @{
         'Param1' = $Param1
         'Param2' = $Param2
@@ -155,14 +139,30 @@ function Invoke-Indago {
             }
         }
     }
+    #endregion
+
+    #region Validate required parameters (after defaults have been applied)
+    if ($null -ne $task.Parameters) {
+        $paramNames = @($task.Parameters | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name)
+        foreach ($paramName in $paramNames) {
+            $paramDef = $task.Parameters.$paramName
+            if ($paramDef.Required -eq $true) {
+                $suppliedValue = $resolvedParams[$paramName]
+                if ([string]::IsNullOrWhiteSpace($suppliedValue)) {
+                    Write-Error "Scriptlet '$Name' requires -$paramName ($($paramDef.Name): $($paramDef.Description))"
+                    return
+                }
+            }
+        }
+    }
+    #endregion
 
     Write-Verbose "Invoke-Indago: Parameters resolved, context: $execContext"
-    #endregion
 
     #region Execute
     try {
         if ($execContext -eq 'System') {
-            # Direct execution in current SYSTEM session — native PowerShell objects
+            # Direct execution in current SYSTEM session -- native PowerShell objects
             Write-Verbose 'Invoke-Indago: Executing in System context (direct).'
 
             # Use param block and arguments for safe execution without injection risk
@@ -179,7 +179,7 @@ function Invoke-Indago {
             return $result
         }
         else {
-            # User-context execution via CreateProcessAsUser — text output
+            # User-context execution via CreateProcessAsUser -- text output
             Write-Verbose 'Invoke-Indago: Executing in User context (CreateProcessAsUser).'
 
             # Inject parameters securely via Base64 encoding since we must pass a string over the process boundary
@@ -211,7 +211,7 @@ function Invoke-Indago {
                     return $deserialized
                 }
                 catch {
-                    # Not JSON — return as plain text (this is fine)
+                    # Not JSON -- return as plain text (this is fine)
                     return $output
                 }
             }
