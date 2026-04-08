@@ -1,6 +1,6 @@
 # WU008_WUDatastoreRepair.ps1
 # Scriptlet: WU008 - WU Database & Datastore Repair
-# Context: System | Version: 1.1
+# Context: System | Version: 1.2
 
 $ErrorActionPreference = 'Continue'
 $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -274,11 +274,13 @@ if ($dsNeedsRepair) {
     }
 
     # Rename DataStore.edb
+    $dsRenamed = $false
     if (Test-Path $dsPath) {
         $bakName = "DataStore.edb.bak_$ts"
         $bakPath = Join-Path -Path (Split-Path $dsPath) -ChildPath $bakName
         try {
             Rename-Item -Path $dsPath -NewName $bakName -Force -ErrorAction Stop
+            $dsRenamed = $true
             $findings.Add([PSCustomObject]@{
                 Check  = 'DataStore Rebuild: Rename'
                 Status = 'OK'
@@ -293,8 +295,9 @@ if ($dsNeedsRepair) {
         }
     }
 
-    # Clear ESE transaction logs
-    if (Test-Path $dsLogsPath) {
+    # Clear ESE transaction logs -- ONLY if DataStore.edb was successfully renamed.
+    # If the rename failed, ESE logs are needed for database recovery.
+    if ($dsRenamed -and (Test-Path $dsLogsPath)) {
         $eseLogFiles = @(Get-ChildItem -Path $dsLogsPath -Filter '*.log' -ErrorAction SilentlyContinue)
         $clearedCount = 0
         foreach ($lf in $eseLogFiles) {
@@ -313,10 +316,20 @@ if ($dsNeedsRepair) {
                 Detail = "$clearedCount ESE log file(s) renamed to .bak. Clean transaction logs will be created on next scan."
             })
         }
+    } elseif (-not $dsRenamed -and (Test-Path $dsLogsPath)) {
+        $findings.Add([PSCustomObject]@{
+            Check  = 'DataStore Rebuild: ESE Logs'
+            Status = 'INFO'
+            Detail = 'ESE transaction logs preserved. The database rename failed, so logs are needed for potential recovery.'
+        })
     }
 
-    # Restart stopped services
-    foreach ($svcToStart in $stoppedServices) {
+    # Restart stopped services in dependency order (reverse of stop order)
+    # Stop order: UsoSvc, wuauserv, BITS, CryptSvc
+    # Start order: CryptSvc, BITS, wuauserv, UsoSvc
+    $restartOrder = @('CryptSvc', 'BITS', 'wuauserv', 'UsoSvc')
+    foreach ($svcToStart in $restartOrder) {
+        if ($stoppedServices -notcontains $svcToStart) { continue }
         try {
             Start-Service -Name $svcToStart -ErrorAction Stop
             Start-Sleep -Seconds 2
@@ -661,10 +674,15 @@ if (Test-Path $pendingXmlPath) {
                     Detail = "Stale pending.xml found ($pxAgeDays days old, $pxSizeKB KB). Took ownership, granted Administrators Full Control, renamed to $pxBakName. The servicing stack was holding onto an obsolete pending operation. CBS will recreate if needed."
                 })
             } catch {
+                # Rename failed -- restore TrustedInstaller ownership so the file
+                # is not left in a broken permissions state.
+                if (Test-Path $pendingXmlPath) {
+                    $null = & icacls.exe $pendingXmlPath /setowner 'NT SERVICE\TrustedInstaller' /q 2>&1
+                }
                 $findings.Add([PSCustomObject]@{
                     Check  = 'pending.xml'
                     Status = 'ISSUE'
-                    Detail = "Stale pending.xml found ($pxAgeDays days old) but could not rename after takeown/icacls attempt: $($_.Exception.Message). The file may be actively locked by TrustedInstaller during a servicing operation. A reboot may be required before retrying."
+                    Detail = "Stale pending.xml found ($pxAgeDays days old) but could not rename after takeown/icacls attempt: $($_.Exception.Message). TrustedInstaller ownership restored. The file may be actively locked during a servicing operation. A reboot may be required before retrying."
                 })
             }
         } else {
@@ -766,15 +784,15 @@ foreach ($svcName in @('wuauserv', 'BITS', 'CryptSvc', 'UsoSvc')) {
 }
 
 # Check for pending reboot
+# CBS RebootPending and WU RebootRequired are registry SUBKEYS (directories),
+# not property values. Their mere existence signals a pending reboot.
 $rebootPending = $false
-try {
-    $cbsReboot = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing' -Name 'RebootPending' -ErrorAction Stop
-    if ($cbsReboot) { $rebootPending = $true }
-} catch { }
-try {
-    $wuReboot = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update' -Name 'RebootRequired' -ErrorAction Stop
-    if ($wuReboot) { $rebootPending = $true }
-} catch { }
+if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') {
+    $rebootPending = $true
+}
+if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') {
+    $rebootPending = $true
+}
 
 if ($rebootPending) {
     $findings.Add([PSCustomObject]@{
