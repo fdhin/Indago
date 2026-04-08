@@ -1,6 +1,6 @@
 # DEF008_DEFRemediation.ps1
 # Scriptlet: DEF008 - Defender Remediation & Recovery
-# Context: System | Version: 1.2
+# Context: System | Version: 1.3
 
 $ErrorActionPreference = 'Continue'
 $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -224,7 +224,7 @@ if ($doCleanGhosts) {
                 # Extract just the executable path (strip arguments)
                 if ($cleanPath -match '^\s*"([^"]+)"') {
                     $cleanPath = $matches[1]
-                } elseif ($cleanPath -match '^\s*([^\s]+\.exe)\b') {
+                } elseif ($cleanPath -match '^\s*(.*?\.exe)\b') {
                     $cleanPath = $matches[1]
                 }
                 $exeExists = Test-Path -LiteralPath $cleanPath -ErrorAction SilentlyContinue
@@ -459,7 +459,7 @@ if ($doRemoveKeys) {
                     $cleanAvExe = [Environment]::ExpandEnvironmentVariables($cleanAvExe)
                     if ($cleanAvExe -match '^\s*"([^"]+)"') {
                         $cleanAvExe = $matches[1]
-                    } elseif ($cleanAvExe -match '^\s*([^\s]+\.exe)\b') {
+                    } elseif ($cleanAvExe -match '^\s*(.*?\.exe)\b') {
                         $cleanAvExe = $matches[1]
                     }
                     if (Test-Path -LiteralPath $cleanAvExe -ErrorAction SilentlyContinue) {
@@ -602,7 +602,9 @@ if ($doResetPrefs) {
                 $normalized = $exPath.TrimEnd('\').TrimEnd('/')
                 $isDangerous = $false
                 foreach ($dp in $dangerousPathPatterns) {
-                    if ($normalized -ieq $dp.TrimEnd('\')) {
+                    $dpNorm = $dp.TrimEnd('\')
+                    # Catch exact match AND wildcard sub-paths (e.g. C:\Windows\*)
+                    if ($normalized -ieq $dpNorm -or $normalized -like "$dpNorm\*") {
                         $isDangerous = $true
                         break
                     }
@@ -931,8 +933,11 @@ try {
     }
 
     # Signature age
+    # Guard against $null -- PowerShell coerces $null to 0 in math
+    # comparisons, so ($null -le 3) is True, falsely reporting OK
+    # when the Defender engine has crashed and returns no data.
     $sigAge = $postStatus.AntivirusSignatureAge
-    if ($sigAge -le 3) {
+    if ($null -ne $sigAge -and $sigAge -le 3) {
         $findings.Add([PSCustomObject]@{
             Check  = 'Verify: Signature Age'
             Status = 'OK'
