@@ -1,6 +1,6 @@
 # WU008_WUDatastoreRepair.ps1
 # Scriptlet: WU008 - WU Database & Datastore Repair
-# Context: System | Version: 1.2
+# Context: System | Version: 1.3
 
 $ErrorActionPreference = 'Continue'
 $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -117,12 +117,14 @@ $preState.ServiceSDDL = $sddlCapture
 $preStatePath = Join-Path -Path $logDir -ChildPath "WU008_PreState_$ts.json"
 try {
     $preState | ConvertTo-Json -Depth 5 | Out-File -FilePath $preStatePath -Encoding ascii -Force
+    $preStateSaved = $true
     $findings.Add([PSCustomObject]@{
         Check  = 'Pre-Remediation State'
         Status = 'OK'
         Detail = "Pre-state saved to $preStatePath"
     })
 } catch {
+    $preStateSaved = $false
     $findings.Add([PSCustomObject]@{
         Check  = 'Pre-Remediation State'
         Status = 'WARN'
@@ -834,7 +836,11 @@ if ($issueCount -eq 0 -and $warnCount -eq 0) {
 }
 
 Write-Output ''
-Write-Output "NEXT:   Pre-remediation state saved to $preStatePath"
+if ($preStateSaved) {
+    Write-Output "NEXT:   Pre-remediation state saved to $preStatePath"
+} else {
+    Write-Output 'NEXT:   Pre-remediation state could not be saved (check disk space/permissions).'
+}
 Write-Output '        Run WU001 WUQuickHealth to verify the fix.'
 Write-Output '        If issues persist -> run WU010 WUServicingRepair (nuclear option).'
 Write-Output ''
