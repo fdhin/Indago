@@ -1,6 +1,6 @@
 # WU006_WUEventTimeline.ps1
 # Scriptlet: WU006 - WU Event Log Timeline & HRESULT Deep Dive
-# Context: System | Version: 1.3
+# Context: System | Version: 1.4
 
 $ErrorActionPreference = 'SilentlyContinue'
 $findings = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -50,7 +50,7 @@ $wuFailureIds   = @(20, 25, 31)
 $wuSuccessIds   = @(19, 26, 42)
 $bitsFailureIds = @(60, 61, 64)
 $bitsSuccessIds = @(4)
-$scmEventIds    = @(7031, 7034, 7036, 7043)
+$scmEventIds    = @(7000, 7009, 7022, 7024, 7031, 7034, 7036, 7043)
 $wuServiceNames = @('wuauserv', 'BITS', 'TrustedInstaller', 'UsoSvc', 'Windows Update', 'Background Intelligent Transfer', 'Windows Modules Installer')
 
 # Dynamically add localized display names so SCM filtering works on non-English Windows
@@ -93,7 +93,7 @@ try {
 } catch { }
 
 # Source 2: BITS-Client/Operational
-$bitsEventIds = @(3, 4, 5, 59, 60, 64)
+$bitsEventIds = @(3, 4, 5, 59, 60, 61, 64)
 try {
     $bitsEvents = @(Get-WinEvent -FilterHashtable @{
         LogName   = 'Microsoft-Windows-BITS-Client/Operational'
@@ -137,7 +137,7 @@ try {
         $shortMsg = $shortMsg -replace '[\r\n]+', ' '
 
         $evtType = 'Info'
-        if ($evt.Level -eq 1 -or $evt.Level -eq 2) { $evtType = 'Failure' }
+        if ($evt.Level -eq 1 -or $evt.Level -eq 2 -or $wuFailureIds -contains $evt.Id) { $evtType = 'Failure' }
         elseif ($wuSuccessIds -contains $evt.Id) { $evtType = 'Success' }
 
         $allEvents.Add([PSCustomObject]@{
