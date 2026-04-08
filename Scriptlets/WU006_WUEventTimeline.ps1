@@ -1,6 +1,6 @@
 # WU006_WUEventTimeline.ps1
 # Scriptlet: WU006 - WU Event Log Timeline & HRESULT Deep Dive
-# Context: System | Version: 1.2
+# Context: System | Version: 1.3
 
 $ErrorActionPreference = 'SilentlyContinue'
 $findings = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -46,15 +46,15 @@ $hresultMap = @{
 # ============================================================
 # Event ID classification
 # ============================================================
-$wuFailureIds   = @(20, 31, 43)
+$wuFailureIds   = @(20, 25, 31)
 $wuSuccessIds   = @(19, 26, 42)
-$bitsFailureIds = @(59, 60, 64)
+$bitsFailureIds = @(60, 61, 64)
 $bitsSuccessIds = @(4)
 $scmEventIds    = @(7031, 7034, 7036, 7043)
 $wuServiceNames = @('wuauserv', 'BITS', 'TrustedInstaller', 'UsoSvc', 'Windows Update', 'Background Intelligent Transfer', 'Windows Modules Installer')
 
 # Dynamically add localized display names so SCM filtering works on non-English Windows
-$localWUNames = @(Get-CimInstance Win32_Service -Filter "Name IN ('wuauserv','BITS','TrustedInstaller','UsoSvc')" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty DisplayName)
+$localWUNames = @(Get-CimInstance Win32_Service -Filter "Name='wuauserv' OR Name='BITS' OR Name='TrustedInstaller' OR Name='UsoSvc'" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty DisplayName)
 $searchNames = @($wuServiceNames) + @($localWUNames) | Select-Object -Unique
 
 # ============================================================
