@@ -1,6 +1,6 @@
 # DEF008_DEFRemediation.ps1
 # Scriptlet: DEF008 - Defender Remediation & Recovery
-# Context: System | Version: 1.1
+# Context: System | Version: 1.2
 
 $ErrorActionPreference = 'Continue'
 $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -52,14 +52,24 @@ $preState = @{
     Services  = @()
 }
 
-# Capture service states
+# Capture service states -- use Get-CimInstance for StartType because
+# Get-Service.StartType is unreliable in PowerShell 5.1 (returns $null
+# on some builds, and .ToString() throws, falsely marking services NotFound)
 foreach ($svcName in @('WinDefend', 'WdNisSvc', 'Sense')) {
     try {
-        $svc = Get-Service -Name $svcName -ErrorAction Stop
-        $preState.Services += @{
-            Name      = $svcName
-            Status    = $svc.Status.ToString()
-            StartType = $svc.StartType.ToString()
+        $svcCim = Get-CimInstance -ClassName Win32_Service -Filter "Name='$svcName'" -ErrorAction Stop
+        if ($svcCim) {
+            $preState.Services += @{
+                Name      = $svcName
+                Status    = $svcCim.State
+                StartType = $svcCim.StartMode
+            }
+        } else {
+            $preState.Services += @{
+                Name      = $svcName
+                Status    = 'NotFound'
+                StartType = 'Unknown'
+            }
         }
     } catch {
         $preState.Services += @{
@@ -99,12 +109,14 @@ try {
 $preStatePath = Join-Path -Path $logDir -ChildPath "DEF008_PreState_$ts.json"
 try {
     $preState | ConvertTo-Json -Depth 5 | Out-File -FilePath $preStatePath -Encoding UTF8 -Force
+    $preStateSaved = $true
     $findings.Add([PSCustomObject]@{
         Check  = 'Pre-State Capture'
         Status = 'OK'
         Detail = "Pre-remediation state saved to $preStatePath"
     })
 } catch {
+    $preStateSaved = $false
     $findings.Add([PSCustomObject]@{
         Check  = 'Pre-State Capture'
         Status = 'WARN'
@@ -196,15 +208,26 @@ if ($doCleanGhosts) {
         $failCount = 0
 
         foreach ($av in $avProducts) {
-            if ($av.displayName -eq 'Windows Defender') { continue }
+            # Defender can appear under multiple names across Windows builds:
+            # 'Windows Defender', 'Windows Defender Antivirus', 'Microsoft Defender Antivirus'
+            if ($av.displayName -match 'Windows Defender|Microsoft Defender') { continue }
 
             $exePath = $av.pathToSignedProductExe
             $exeExists = $false
             if (-not [string]::IsNullOrWhiteSpace($exePath)) {
-                # SecurityCenter2 paths may contain literal quotes around
-                # the path string. Strip them to avoid false ghost detection.
+                # SecurityCenter2 paths may contain:
+                # - literal quotes around the path
+                # - environment variables (%ProgramFiles%, etc.)
+                # - command-line arguments after the .exe path
                 $cleanPath = $exePath.Trim('"').Trim("'")
-                $exeExists = Test-Path -Path $cleanPath -ErrorAction SilentlyContinue
+                $cleanPath = [Environment]::ExpandEnvironmentVariables($cleanPath)
+                # Extract just the executable path (strip arguments)
+                if ($cleanPath -match '^\s*"([^"]+)"') {
+                    $cleanPath = $matches[1]
+                } elseif ($cleanPath -match '^\s*([^\s]+\.exe)\b') {
+                    $cleanPath = $matches[1]
+                }
+                $exeExists = Test-Path -LiteralPath $cleanPath -ErrorAction SilentlyContinue
             }
 
             if ($exeExists) {
@@ -230,7 +253,7 @@ if ($doCleanGhosts) {
                     $findings.Add([PSCustomObject]@{
                         Check  = "Ghost AV: $($av.displayName)"
                         Status = 'WARN'
-                        Detail = "Failed to remove ghost registration: $($_.Exception.Message). A reboot may help, or manually delete via WMI."
+                        Detail = "Failed to remove ghost registration: $($_.Exception.Message). SecurityCenter2 is read-only on most modern Windows builds -- a reboot or wscsvc service restart may clear it automatically."
                     })
                 }
             }
@@ -241,6 +264,12 @@ if ($doCleanGhosts) {
                 Check  = 'Ghost AV Cleanup'
                 Status = 'OK'
                 Detail = 'No third-party AV registrations found. Defender is the sole registered provider.'
+            })
+        } elseif ($ghostCount -gt 0 -and $failCount -eq $ghostCount) {
+            $findings.Add([PSCustomObject]@{
+                Check  = 'Ghost AV Cleanup'
+                Status = 'WARN'
+                Detail = "$ghostCount ghost registration(s) detected but removal failed for all. SecurityCenter2 is typically read-only on modern Windows. A reboot should clear stale entries."
             })
         } elseif ($ghostCount -eq 0 -and $liveCount -gt 0) {
             $findings.Add([PSCustomObject]@{
@@ -271,7 +300,7 @@ if ($doClearCache) {
     $platformDir = 'C:\ProgramData\Microsoft\Windows Defender\Platform'
     if (Test-Path $platformDir) {
         $latestPlatform = Get-ChildItem -Path $platformDir -Directory -ErrorAction SilentlyContinue |
-                          Sort-Object Name -Descending |
+                          Sort-Object LastWriteTime -Descending |
                           Select-Object -First 1
         if ($null -ne $latestPlatform) {
             $candidate = Join-Path -Path $latestPlatform.FullName -ChildPath 'MpCmdRun.exe'
@@ -423,16 +452,21 @@ if ($doRemoveKeys) {
     try {
         $avCheck = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction SilentlyContinue
         foreach ($avItem in $avCheck) {
-            if ($avItem.displayName -ne 'Windows Defender') {
+            if ($avItem.displayName -match 'Windows Defender|Microsoft Defender') { continue }
                 $avExe = $avItem.pathToSignedProductExe
                 if (-not [string]::IsNullOrWhiteSpace($avExe)) {
                     $cleanAvExe = $avExe.Trim('"').Trim("'")
-                    if (Test-Path $cleanAvExe -ErrorAction SilentlyContinue) {
+                    $cleanAvExe = [Environment]::ExpandEnvironmentVariables($cleanAvExe)
+                    if ($cleanAvExe -match '^\s*"([^"]+)"') {
+                        $cleanAvExe = $matches[1]
+                    } elseif ($cleanAvExe -match '^\s*([^\s]+\.exe)\b') {
+                        $cleanAvExe = $matches[1]
+                    }
+                    if (Test-Path -LiteralPath $cleanAvExe -ErrorAction SilentlyContinue) {
                         $hasLiveThirdPartyAV = $true
                         break
                     }
                 }
-            }
         }
     } catch { }
 
@@ -556,6 +590,7 @@ if ($doResetPrefs) {
         '*.*'
     )
 
+    $dangerousFoundCount = 0
     $removedCount = 0
 
     try {
@@ -578,6 +613,7 @@ if ($doResetPrefs) {
                 }
 
                 if ($isDangerous) {
+                    $dangerousFoundCount++
                     try {
                         Remove-MpPreference -ExclusionPath $exPath -ErrorAction Stop
                         $removedCount++
@@ -614,6 +650,7 @@ if ($doResetPrefs) {
                 }
 
                 if ($isDangerous) {
+                    $dangerousFoundCount++
                     try {
                         Remove-MpPreference -ExclusionExtension $exExt -ErrorAction Stop
                         $removedCount++
@@ -645,6 +682,7 @@ if ($doResetPrefs) {
                 }
 
                 if ($isDangerous) {
+                    $dangerousFoundCount++
                     try {
                         Remove-MpPreference -ExclusionProcess $exProc -ErrorAction Stop
                         $removedCount++
@@ -664,17 +702,23 @@ if ($doResetPrefs) {
             }
         }
 
-        if ($removedCount -eq 0) {
+        if ($dangerousFoundCount -eq 0) {
             $findings.Add([PSCustomObject]@{
                 Check  = 'Exclusion Audit'
                 Status = 'OK'
                 Detail = 'No dangerous exclusion patterns found. Existing exclusions appear safe.'
             })
-        } else {
+        } elseif ($removedCount -eq $dangerousFoundCount) {
             $findings.Add([PSCustomObject]@{
                 Check  = 'Exclusion Audit Summary'
                 Status = 'OK'
-                Detail = "$removedCount dangerous exclusion(s) removed. Run DEF004 DEFRealtimeProtection to review remaining exclusions."
+                Detail = "$removedCount dangerous exclusion(s) found and removed. Run DEF004 DEFRealtimeProtection to review remaining exclusions."
+            })
+        } else {
+            $findings.Add([PSCustomObject]@{
+                Check  = 'Exclusion Audit Summary'
+                Status = 'WARN'
+                Detail = "$dangerousFoundCount dangerous exclusion(s) found but only $removedCount could be removed. Tamper Protection or cloud policy may be blocking local removal. Manage exclusions via Intune/MDE portal."
             })
         }
     } catch {
@@ -964,7 +1008,11 @@ if ($issueCount -eq 0 -and $warnCount -eq 0) {
 }
 
 Write-Output ''
-Write-Output "NEXT:   Pre-remediation state saved to $preStatePath"
+if ($preStateSaved) {
+    Write-Output "NEXT:   Pre-remediation state saved to $preStatePath"
+} else {
+    Write-Output 'NEXT:   Pre-remediation state could not be saved (check disk space/permissions).'
+}
 Write-Output '        Run DEF001 DEFStatusTriage to verify the fix.'
 Write-Output '        If compliance still failing -> check Intune compliance policy config'
 Write-Output '        (the issue may be policy-side, not endpoint-side).'
