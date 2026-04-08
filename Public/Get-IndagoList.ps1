@@ -25,15 +25,14 @@ function Get-IndagoList {
         return
     }
 
-    # Apply category filter if provided
+    # Apply category filter if provided (case-insensitive partial match)
     if (-not [string]::IsNullOrWhiteSpace($Category)) {
-        $catalog = @($catalog | Where-Object { $_.Category -eq $Category })
+        $catalog = @($catalog | Where-Object { $_.Category -like "*$Category*" })
         if ($catalog.Count -eq 0) {
-            Write-Warning "No scriptlets found in category: $Category"
+            Write-Warning "No scriptlets found matching category: $Category"
 
             # Show available categories to help the user
-            $allCategories = @($script:IndagoState.ScriptletCatalog) |
-                ForEach-Object { $_.Category } |
+            $allCategories = $script:IndagoState.ScriptletCatalog.Category |
                 Select-Object -Unique |
                 Sort-Object
             Write-Warning "Available categories: $($allCategories -join ', ')"
@@ -41,10 +40,10 @@ function Get-IndagoList {
         }
     }
 
-    # Format as a clean table for console readability, grouped by category.
-    # Sort by Id within each category — lower numbers are safe read-only triage,
-    # higher numbers are deeper diagnostics. This guides techs through the
-    # correct workflow order.
+    # Output as PSCustomObjects -- never use Format-Table inside a function.
+    # Callers can pipe to Format-Table, Where-Object, or capture into a variable.
+    # Sort by Category then Id so techs see the correct workflow order
+    # (lower numbers = safe read-only triage, higher = deeper diagnostics).
     $catalog |
         Sort-Object -Property Category, Id |
         ForEach-Object {
@@ -55,5 +54,5 @@ function Get-IndagoList {
                 Context     = $_.ExecutionContext
                 Description = $_.DisplayName
             }
-        } | Format-Table -AutoSize -Wrap
+        }
 }
