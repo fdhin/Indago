@@ -1,6 +1,6 @@
 # WU007_WUEnvironmentAudit.ps1
 # Scriptlet: WU007 - Windows Update Agent & Environment Audit
-# Context: System | Version: 1.1
+# Context: System | Version: 1.2
 
 $ErrorActionPreference = 'SilentlyContinue'
 $findings = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -98,8 +98,9 @@ try {
     $osCimCaption = $osInfo.Caption
 } catch { }
 
-$buildString = $osBuild
-if ($osUBR) { $buildString = "$osBuild.$osUBR" }
+$buildString = if ($osBuild) {
+    if ($null -ne $osUBR) { "$osBuild.$osUBR" } else { "$osBuild" }
+} else { 'Unknown' }
 
 $editionDisplay = if ($osCimCaption) { $osCimCaption } elseif ($osProductName) { $osProductName } else { 'Unknown Edition' }
 
@@ -114,7 +115,7 @@ $findings.Add([PSCustomObject]@{
 
 # Check for LTSC/Server editions
 if ($osEdition) {
-    if ($osEdition -match 'LTSC|LTSB|Server') {
+    if ($osEdition -match 'LTSC|LTSB|EnterpriseS|Server') {
         $findings.Add([PSCustomObject]@{
             Check  = 'Servicing Channel'
             Status = 'INFO'
@@ -191,12 +192,13 @@ Write-Output '--- PowerShell ---'
 
 $psVer = $PSVersionTable.PSVersion
 $clrVer = $PSVersionTable.CLRVersion
+$clrText = if ($clrVer) { $clrVer.ToString() } else { 'N/A' }
 
-if ($psVer.Major -ge 5 -and $psVer.Minor -ge 1) {
+if ($psVer -ge [version]'5.1') {
     $findings.Add([PSCustomObject]@{
         Check  = 'PowerShell Version'
         Status = 'OK'
-        Detail = "PowerShell $($psVer.ToString()) (CLR $($clrVer.ToString())). Expected version for WU management."
+        Detail = "PowerShell $($psVer.ToString()) (CLR $clrText). Expected version for WU management."
     })
 } elseif ($psVer.Major -ge 5) {
     $findings.Add([PSCustomObject]@{
@@ -230,7 +232,7 @@ $versionTable = @{
     '22631' = @{ Display = '23H2';  Product = 'Windows 11'; Status = 'OK';   Note = 'In service. Home/Pro EOS Nov 2025, Enterprise Nov 2026.' }
     '26100' = @{ Display = '24H2';  Product = 'Windows 11'; Status = 'OK';   Note = 'In service. Home/Pro EOS Oct 2026, Enterprise Oct 2027.' }
     '26200' = @{ Display = '25H2';  Product = 'Windows 11'; Status = 'OK';   Note = 'In service (2025 Update). Delivered as enablement package from 24H2.' }
-    '28000' = @{ Display = '26H1';  Product = 'Windows 11'; Status = 'OK';   Note = 'In service. ARM64-only release for next-gen Snapdragon X2 hardware.' }
+
 }
 
 if ($osBuild -and $versionTable.ContainsKey($osBuild)) {
@@ -308,7 +310,7 @@ if (-not $isServer) {
     try {
         $secProducts = Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName 'AntiVirusProduct' -ErrorAction Stop
         foreach ($p in $secProducts) {
-            if ($p.displayName -and $p.displayName -ne 'Windows Defender') {
+            if ($p.displayName -and $p.displayName -notmatch 'Windows Defender|Microsoft Defender') {
                 $avProducts += $p.displayName
                 $avDetected = $true
             }
@@ -387,7 +389,7 @@ if ($avDetected) {
         $findings.Add([PSCustomObject]@{
             Check  = 'Third-Party AV'
             Status = 'OK'
-            Detail = 'No third-party AV detected. Only Windows Defender active. No WU interference expected from AV.'
+            Detail = 'No third-party AV detected via SecurityCenter2 or Uninstall registry scan. No obvious AV-related WU interference identified.'
         })
     }
 }
@@ -494,12 +496,13 @@ if ($sccmDetected -and $intuneDetected) {
 
 # Patch My PC
 try {
-    $pmpcs = Get-Service -Name 'PatchMyPC*' -ErrorAction SilentlyContinue
-    if ($pmpcs) {
+    $pmpcs = @(Get-Service -Name 'PatchMyPC*' -ErrorAction SilentlyContinue)
+    if ($pmpcs.Count -gt 0) {
+        $firstPmpc = $pmpcs | Select-Object -First 1
         $findings.Add([PSCustomObject]@{
             Check  = 'Patch My PC Agent'
             Status = 'INFO'
-            Detail = "Patch My PC agent detected (Service: $($pmpcs[0].Status)). Third-party patching is managed externally."
+            Detail = "Patch My PC agent detected (Service: $($firstPmpc.Status)). Third-party patching is managed externally."
         })
         $null = $mgmtTools.Add('PatchMyPC')
     }
@@ -534,16 +537,32 @@ try {
 $wsusManaged = $false
 try {
     $wuPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
+    $auPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
     if (Test-Path $wuPath) {
         $wuProps = Get-ItemProperty -Path $wuPath -ErrorAction SilentlyContinue
+        $useWsus = $false
+        if (Test-Path $auPath) {
+            $auProps = Get-ItemProperty -Path $auPath -ErrorAction SilentlyContinue
+            if ($null -ne $auProps -and $auProps.PSObject.Properties['UseWUServer'] -and $auProps.UseWUServer -eq 1) {
+                $useWsus = $true
+            }
+        }
         if ($wuProps.PSObject.Properties['WUServer'] -and $wuProps.WUServer) {
-            $wsusManaged = $true
-            $findings.Add([PSCustomObject]@{
-                Check  = 'WSUS Managed'
-                Status = 'INFO'
-                Detail = "WUServer registry key present: $($wuProps.WUServer). Updates may be sourced from WSUS."
-            })
-            $null = $mgmtTools.Add('WSUS')
+            if ($useWsus) {
+                $wsusManaged = $true
+                $findings.Add([PSCustomObject]@{
+                    Check  = 'WSUS Managed'
+                    Status = 'INFO'
+                    Detail = "WSUS active (UseWUServer=1). Server: $($wuProps.WUServer). Updates are sourced from WSUS."
+                })
+                $null = $mgmtTools.Add('WSUS')
+            } else {
+                $findings.Add([PSCustomObject]@{
+                    Check  = 'WSUS Key (Stale)'
+                    Status = 'WARN'
+                    Detail = "WUServer key present ($($wuProps.WUServer)) but UseWUServer is not set to 1. This is likely a stale/orphaned GPO key. Updates are NOT being sourced from this WSUS server."
+                })
+            }
         }
     }
 } catch { }
@@ -560,7 +579,7 @@ if ($mgmtTools.Count -gt 1) {
     $findings.Add([PSCustomObject]@{
         Check  = 'Update Management'
         Status = 'INFO'
-        Detail = 'No third-party update management tools detected. Updates are controlled locally via Windows Update settings.'
+        Detail = 'No known third-party update management tools detected. Update behavior may still be governed by local, domain, or MDM policy (see WU002 WUPolicyAudit).'
     })
 }
 
