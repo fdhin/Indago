@@ -1,6 +1,6 @@
 # BL009_BLTpmRemediation.ps1
 # Scriptlet: BL009 - TPM & Key Protector Remediation
-# Context: System | Version: 1.1
+# Context: System | Version: 1.2
 
 $ErrorActionPreference = 'Continue'
 $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -699,18 +699,33 @@ if ($doGenerateKey) {
         # Generate new RecoveryPassword
         $newProtectorId = $null
         try {
+            # Capture protector IDs BEFORE adding the new one, so we can diff
+            # to find the genuinely new ID. KeyProtector array order is not
+            # guaranteed, so $rpProtectors[-1] is unreliable.
+            $beforeIds = @($blVol.KeyProtector |
+                Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' } |
+                ForEach-Object { $_.KeyProtectorId })
+
             $addResult = Add-BitLockerKeyProtector -MountPoint 'C:' -RecoveryPasswordProtector -ErrorAction Stop
-            # Get the newly added protector ID
+
+            # Re-query and diff to find the new protector
             $blVol2 = Get-BitLockerVolume -MountPoint 'C:' -ErrorAction Stop
-            $rpProtectors = @($blVol2.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' })
-            if ($rpProtectors.Count -gt 0) {
-                # The last RecoveryPassword protector is likely the one we just added
-                $newProtector = $rpProtectors[$rpProtectors.Count - 1]
+            $newProtector = $blVol2.KeyProtector | Where-Object {
+                $_.KeyProtectorType -eq 'RecoveryPassword' -and
+                $beforeIds -notcontains $_.KeyProtectorId
+            } | Select-Object -First 1
+
+            if ($newProtector) {
                 $newProtectorId = $newProtector.KeyProtectorId
                 $rpValue = $newProtector.RecoveryPassword
-                # Show first 6 digits for verification, mask the rest
-                $masked = if ($rpValue -and $rpValue.Length -gt 6) {
-                    $rpValue.Substring(0, 6) + '-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX'
+                # Show first group for verification, mask the rest
+                $masked = if ($rpValue) {
+                    $parts = $rpValue -split '-'
+                    if ($parts.Count -ge 8) {
+                        $parts[0] + '-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX-XXXXXX'
+                    } else {
+                        '(unexpected format)'
+                    }
                 } else {
                     '(could not retrieve)'
                 }
@@ -723,7 +738,7 @@ if ($doGenerateKey) {
                 $findings.Add([PSCustomObject]@{
                     Check  = 'New Recovery Password'
                     Status = 'WARN'
-                    Detail = 'Add-BitLockerKeyProtector completed but no RecoveryPassword protector found on re-query.'
+                    Detail = 'Add-BitLockerKeyProtector completed but could not identify the new protector via before/after diff. Re-query returned no new RecoveryPassword ID.'
                 })
             }
         } catch {
@@ -781,12 +796,15 @@ if ($doGenerateKey) {
                 try {
                     BackupToAAD-BitLockerKeyProtector -MountPoint 'C:' -KeyProtectorId $newProtectorId -ErrorAction Stop
                     # Check for Event ID 845 as definitive confirmation
+                    # Time-bound to last 10 minutes to avoid matching old events
                     $escrowEvent = $null
                     Start-Sleep -Seconds 5
                     try {
+                        $tenMinAgo = (Get-Date).AddMinutes(-10)
                         $escrowEvent = Get-WinEvent -FilterHashtable @{
                             LogName   = 'Microsoft-Windows-BitLocker/BitLocker Management'
                             Id        = 845
+                            StartTime = $tenMinAgo
                         } -MaxEvents 1 -ErrorAction Stop
                     } catch { }
 
@@ -994,15 +1012,15 @@ foreach ($rs in $requiredServices) {
 }
 
 # Check for pending reboot
+# CBS RebootPending and WU RebootRequired are registry SUBKEYS (directories),
+# not property values. Their mere existence signals a pending reboot.
 $rebootPending = $false
-try {
-    $cbsReboot = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing' -Name 'RebootPending' -ErrorAction Stop
-    if ($cbsReboot) { $rebootPending = $true }
-} catch { }
-try {
-    $wuReboot = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update' -Name 'RebootRequired' -ErrorAction Stop
-    if ($wuReboot) { $rebootPending = $true }
-} catch { }
+if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') {
+    $rebootPending = $true
+}
+if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') {
+    $rebootPending = $true
+}
 
 if ($rebootPending -or $doTpmClear) {
     $findings.Add([PSCustomObject]@{
