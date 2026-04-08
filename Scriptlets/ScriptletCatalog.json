@@ -376,8 +376,8 @@
       "agent",
       "diagnostic"
     ],
-    "Version": "1.3",
-    "Notes": "v1.3: Added word boundary regex to AV Uninstall registry scan -- prevents substring false positives (e.g. 'ESET' matching 'Password Reset Utility'). Added LTSC/Server lifecycle bypass in feature update eligibility -- LTSC 2021 (Build 19044) and Server editions share consumer build numbers but have independent 5-10 year support lifecycles, script no longer falsely flags them as EOS. Added TargetReleaseVersion to Intune Update Ring policy audit (completes the ProductVersion+TargetReleaseVersion pair required for OS version pinning). v1.2: Fixed PowerShell version comparison logic -- Major -ge 5 -and Minor -ge 1 fails for 7.0/6.0 (Minor is 0), replaced with [version] comparison. Added CLR null safety for non-Desktop editions. Fixed UBR truthiness trap -- integer 0 is falsy in PS, changed to $null -ne $osUBR. Added build string null guard for failed registry reads. Added EnterpriseS to LTSC detection regex (LTSC editions use EditionID EnterpriseS, not LTSC substring). Broadened Defender SecurityCenter2 exclusion to match Microsoft Defender Antivirus (modern branding). Fixed PatchMyPC scalar indexing -- wrapped Get-Service in @() and used Select-Object -First 1. Fixed WSUS stale key false positive -- now checks UseWUServer=1 in AU subkey before declaring WSUS active, warns on orphaned WUServer key. Removed speculative build 28000. Softened overclaim wording for AV and management tool absence findings. v1.1: Fixed WU agent version detection -- now reads wuaueng.dll FileVersion as primary source (registry keys are unpopulated on Win 11 25H2+), with registry AgentVersion and SetupVersion as fallbacks. Enhanced Intune MDM check to inspect PolicyManager Update registry keys and report whether Update Ring policies are actively applied (counts and summarizes policy values). v1.0 baseline: 8 check groups for WU agent, OS edition/build, .NET Framework, PowerShell, feature update eligibility, third-party AV, update management tools, and prerequisites.",
+    "Version": "1.4",
+    "Notes": "v1.4: Fixed .NET 4.8.1 threshold from 533325 to 533320 (Microsoft docs confirm 533320 is the minimum Release DWORD for 4.8.1). Updated Windows lifecycle statuses for April 2026: Win11 22H2 (22621) moved from EXT to EOS (Enterprise support ended Oct 2025), Win11 23H2 (22631) moved from OK to EXT (Home/Pro expired Nov 2025, Enterprise Nov 2026). Updated Win10 22H2 (19045) note to reflect both Consumer and Enterprise reached EOS Oct 14, 2025 (ESU available). Added specific EOS dates to Win11 25H2 (26200) entry per Microsoft lifecycle documentation. v1.3: Added word boundary regex to AV Uninstall registry scan -- prevents substring false positives (e.g. 'ESET' matching 'Password Reset Utility'). Added LTSC/Server lifecycle bypass in feature update eligibility -- LTSC 2021 (Build 19044) and Server editions share consumer build numbers but have independent 5-10 year support lifecycles, script no longer falsely flags them as EOS. Added TargetReleaseVersion to Intune Update Ring policy audit (completes the ProductVersion+TargetReleaseVersion pair required for OS version pinning). v1.2: Fixed PowerShell version comparison logic -- Major -ge 5 -and Minor -ge 1 fails for 7.0/6.0 (Minor is 0), replaced with [version] comparison. Added CLR null safety for non-Desktop editions. Fixed UBR truthiness trap -- integer 0 is falsy in PS, changed to $null -ne $osUBR. Added build string null guard for failed registry reads. Added EnterpriseS to LTSC detection regex (LTSC editions use EditionID EnterpriseS, not LTSC substring). Broadened Defender SecurityCenter2 exclusion to match Microsoft Defender Antivirus (modern branding). Fixed PatchMyPC scalar indexing -- wrapped Get-Service in @() and used Select-Object -First 1. Fixed WSUS stale key false positive -- now checks UseWUServer=1 in AU subkey before declaring WSUS active, warns on orphaned WUServer key. Removed speculative build 28000. Softened overclaim wording for AV and management tool absence findings. v1.1: Fixed WU agent version detection -- now reads wuaueng.dll FileVersion as primary source (registry keys are unpopulated on Win 11 25H2+), with registry AgentVersion and SetupVersion as fallbacks. Enhanced Intune MDM check to inspect PolicyManager Update registry keys and report whether Update Ring policies are actively applied (counts and summarizes policy values). v1.0 baseline: 8 check groups for WU agent, OS edition/build, .NET Framework, PowerShell, feature update eligibility, third-party AV, update management tools, and prerequisites.",
     "ScriptFile": "WU007_WUEnvironmentAudit.ps1"
   },
   {
@@ -609,5 +609,75 @@
     "Version": "1.0",
     "Notes": "Read-only diagnostic. 7 check groups: (1) Total rule count via CIM MSFT_NetFirewallRule with 30-second timeout, falling back to direct registry count at HKLM FirewallRules if CIM hangs. Thresholds: <500 OK, 500-3000 info, 3001-10000 warn, >10000 critical. (2) Per-profile distribution from registry pipe-delimited Profile= field (Domain/Private/Public/All), flags >70% concentration or >5000 in single profile. (3) Duplicate rule detection using 6-field fingerprint (Name+Direction+Action+Program+Protocol+LocalPort) from registry parsing with hash-based grouping, reports top 5 offenders. (4) Orphaned application path validation with SYSTEM-context %LocalAppData%/%APPDATA%/%USERPROFILE% expansion against all C:\\Users profiles, plus absolute user path validation. (5) Rule store size measurement of FirewallRules registry key (Unicode byte calculation), flags >10 MB approaching 14 MB MpsSvc payload limit. (6) Enabled vs disabled rule ratio from Active= field, flags >5000 enabled rules. (7) Event ID 4953 (rule ignored because unparseable) from Security log, 7-day window. Does not duplicate FW001 profile status, FW002 policy reads, FW003 third-party detection, or FW004 service health/event IDs (5027/5028/5030/5035/5037).",
     "ScriptFile": "FW005_FWRuleDiagnostic.ps1"
+  },
+  {
+    "Id": "WU009",
+    "Name": "WUServiceReset",
+    "DisplayName": "WU Service & Dependency Reset",
+    "Category": "WindowsUpdate",
+    "Description": "Stops WU services, renames SoftwareDistribution and catroot2 caches, re-registers core COM DLLs, resets Winsock, and restarts services. The standard first-line fix for stuck Windows Update.",
+    "ExecutionContext": "System",
+    "Parameters": {},
+    "Tags": [
+      "windows-update",
+      "remediation",
+      "service-reset",
+      "repair"
+    ],
+    "Version": "1.1",
+    "Notes": "REMEDIATION SCRIPT -- modifies system state. Stops 5 services (UsoSvc, wuauserv, BITS, CryptSvc, AppIDSvc), clears BITS download queue (qmgr*.dat files in ProgramData\\Microsoft\\Network\\Downloader), renames SoftwareDistribution and catroot2 cache folders with timestamped .bak suffix, re-registers 8 COM DLLs (wuaueng.dll, wuapi.dll, wups.dll, wups2.dll, wuwebv.dll, atl.dll, urlmon.dll, mshtml.dll), resets Winsock catalog, then restarts all services. Pre-remediation state captured to C:\\ProgramData\\Indago\\Logs\\WU009_PreState_YYYYMMDD-HHmmss.json. Reboot recommended after Winsock reset. If rename fails due to file lock, provides the tech with the taskkill command for the offending process PID. Does NOT include msiserver/TrustedInstaller, SDDL reset, or esentutl repair (those belong to WU008 WUDatastoreRepair). v1.1: Added BITS download queue cleanup (qmgr*.dat) between service stop and cache rename -- corrupt BITS queues persist across service restarts and cause recurring download failures. v1.0: baseline.",
+    "ScriptFile": "WU009_WUServiceReset.ps1"
+  },
+  {
+    "Id": "DEF008",
+    "Name": "DEFRemediation",
+    "DisplayName": "Defender Remediation & Recovery",
+    "Category": "DefenderEndpoint",
+    "Description": "Forces signature update, removes ghost third-party AV registrations, clears legacy override registry keys, re-enables real-time protection, restarts Defender services, and optionally resets cache and tangled preferences.",
+    "ExecutionContext": "System",
+    "Parameters": {
+      "Param1": {
+        "Name": "Action",
+        "Description": "Remediation scope. Auto (default): update sigs, cleanup ghosts, re-enable RTP, remove overrides, restart services, Intune sync. UpdateOnly: just force signature update. CleanupOnly: just remove ghost AV registrations and legacy registry keys. Full: everything including dynamic signatures cache clear, dangerous exclusion removal, and quick scan.",
+        "Required": false,
+        "Default": "Auto"
+      }
+    },
+    "Tags": [
+      "defender",
+      "remediation",
+      "recovery",
+      "cleanup",
+      "repair"
+    ],
+    "Version": "1.1",
+    "Notes": "REMEDIATION SCRIPT -- modifies system state. 4 modes controlled by Param1: Auto (default) runs signature update, ghost AV cleanup via Remove-CimInstance on SecurityCenter2, legacy DisableAntiSpyware/DisableAntiVirus/ForceDefenderPassiveMode registry key removal (with domain-join safety guard), RTP re-enable via Set-MpPreference (Tamper Protection allows enablement), WdNisSvc restart (WinDefend is PPL-protected, cannot be restarted locally), and Intune MDM sync (OMADM tasks only). UpdateOnly runs only signature update cascade (MicrosoftUpdateServer -> MMPC -> InternalDefinitionUpdateServer -> FileShares -> default). CleanupOnly runs only ghost AV removal and registry key cleanup. Full adds MpCmdRun.exe -removedefinitions -dynamicsignatures cache clear, dangerous exclusion removal (drive roots, system dirs, executable extensions like .exe/.dll/.sys/.ps1/.bat/.vbs/.scr), and quick scan validation. Pre-remediation state (Get-MpComputerStatus + Get-MpPreference + service states) captured to C:\\ProgramData\\Indago\\Logs\\DEF008_PreState_*.json. Does NOT modify exclusions outside Full mode, does NOT touch ASR rules, does NOT update platform binaries, does NOT onboard/offboard MDE. Ghost AV removal safety guard: only removes SecurityCenter2 entries where the product executable does not exist on disk (true orphans). v1.1: Removed WinDefend from restart loop -- MsMpEng.exe is a PPL-protected process, SYSTEM cannot stop it, a reboot is the only supported restart method. Only WdNisSvc is restarted now. Added quote trimming on SecurityCenter2 pathToSignedProductExe values -- WMI returns literal quotes around paths, causing Test-Path false negatives and false ghost detection. Filtered Intune sync to OMADM tasks only to prevent MDM client saturation from triggering enrollment retry and cert renewal tasks simultaneously. Corrected Tamper Protection messaging -- TP blocks weakening security (disabling RTP), not strengthening it (enabling RTP). Added TP pre-check in Step 7 exclusion audit -- cloud-managed TP blocks local Remove-MpPreference calls. v1.0: baseline.",
+    "ScriptFile": "DEF008_DEFRemediation.ps1"
+  },
+  {
+    "Id": "BL009",
+    "Name": "BLTpmRemediation",
+    "DisplayName": "TPM & Key Protector Remediation",
+    "Category": "BitLocker",
+    "Description": "Cleans up TPM state, removes stale key protectors, resumes suspended encryption, generates new recovery passwords, and forces escrow to Entra ID",
+    "ExecutionContext": "System",
+    "Parameters": {
+      "Param1": {
+        "Name": "Action",
+        "Description": "Remediation mode: Auto (default) -- smart remediation; DecryptFirst -- force full decryption before retry; ClearTPM -- clear TPM ownership (destructive, requires reboot)",
+        "Required": false,
+        "Default": "Auto"
+      }
+    },
+    "ScriptFile": "BL009_BLTpmRemediation.ps1",
+    "Tags": [
+      "bitlocker",
+      "remediation",
+      "tpm",
+      "key-protector",
+      "repair"
+    ],
+    "Version": "1.1",
+    "Notes": "REMEDIATION SCRIPT -- modifies system state. 3 modes controlled by Param1: Auto (default) identifies stale RecoveryPassword protectors (deferred deletion), resumes suspended BitLocker (adds TPM protector if missing, with GPO/PIN policy conflict detection), initializes TPM if not ready, generates new RecoveryPassword, attempts Entra ID escrow via BackupToAAD-BitLockerKeyProtector (with dsregcmd /status pre-check for AAD/Hybrid join and PRT validity), then deletes stale protectors ONLY after new key is confirmed (Golden Rule: never leave a drive without a recovery key). DecryptFirst forces full decryption via Disable-BitLocker then exits -- tech must re-run in Auto after decryption completes. ClearTPM clears TPM ownership via Clear-Tpm (destructive -- invalidates all sealed keys), suspends BitLocker indefinitely (RebootCount 0) to survive multi-reboot TPM clear cycle (BIOS prompt + OS load), re-initializes TPM, generates new protectors. OEM physical presence warning for Lenovo (F9/F12 prompt risk), Dell, HP. Pre-remediation state (Get-Tpm + Get-BitLockerVolume + service states + OEM info) saved to C:\\\\ProgramData\\\\Indago\\\\Logs\\\\BL009_PreState_*.json. Service dependency validation: bdesvc, tbs, KeyIso must be running. Handles ghost suspended state (FullyEncrypted + ProtectionOff) by detecting missing TPM protector and adding before Resume-BitLocker. Locked volume hard stop prevents cascading errors. Escrow: BackupToAAD for AAD/Hybrid joined, Backup-BitLockerKeyProtector for on-prem AD, full key display for non-joined devices. Event ID 845 confirmation for AAD escrow success. NTE_BAD_KEYSET (0x80090016) detection for motherboard swap scenarios with Ngc folder purge guidance. Does NOT enable encryption (that is BL010). Does NOT modify GPO/MDM policy. Does NOT touch BIOS/UEFI settings. v1.1: Critical safety fix -- moved stale protector deletion from Step 3 to Step 6 (after new key generation and escrow confirmation) to prevent catastrophic data loss if escrow fails. Changed ClearTPM RebootCount from 1 to 0 to survive double-reboot TPM clear cycle. Added Locked volume hard stop at Step 4 entry. Added GPO/PIN policy conflict detection when adding TPM protector. v1.0: baseline."
   }
 ]

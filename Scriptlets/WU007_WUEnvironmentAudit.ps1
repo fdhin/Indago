@@ -1,6 +1,6 @@
 # WU007_WUEnvironmentAudit.ps1
 # Scriptlet: WU007 - Windows Update Agent & Environment Audit
-# Context: System | Version: 1.3
+# Context: System | Version: 1.4
 
 $ErrorActionPreference = 'SilentlyContinue'
 $findings = [System.Collections.Generic.List[PSCustomObject]]::new()
@@ -140,7 +140,7 @@ try {
             $dotNetRelease = [int]$ndpProps.Release
 
             # Official Microsoft decode table
-            if ($dotNetRelease -ge 533325) { $dotNetVersion = '4.8.1' }
+            if ($dotNetRelease -ge 533320) { $dotNetVersion = '4.8.1' }
             elseif ($dotNetRelease -ge 528040) { $dotNetVersion = '4.8' }
             elseif ($dotNetRelease -ge 461808) { $dotNetVersion = '4.7.2' }
             elseif ($dotNetRelease -ge 461308) { $dotNetVersion = '4.7.1' }
@@ -226,12 +226,12 @@ $versionTable = @{
     '19042' = @{ Display = '20H2';  Product = 'Windows 10'; Status = 'EOS';  Note = 'End of service since May 2022 (Home/Pro), Jun 2023 (Enterprise)' }
     '19043' = @{ Display = '21H1';  Product = 'Windows 10'; Status = 'EOS';  Note = 'End of service since Dec 2022' }
     '19044' = @{ Display = '21H2';  Product = 'Windows 10'; Status = 'EOS';  Note = 'End of service since Jun 2023 (Home/Pro), Jun 2024 (Enterprise)' }
-    '19045' = @{ Display = '22H2';  Product = 'Windows 10'; Status = 'EOS';  Note = 'End of service Oct 2025 (Home/Pro). Extended ESU available for Enterprise.' }
+    '19045' = @{ Display = '22H2';  Product = 'Windows 10'; Status = 'EOS';  Note = 'End of service Oct 14, 2025 (Home/Pro/Enterprise). Extended ESU available.' }
     '22000' = @{ Display = '21H2';  Product = 'Windows 11'; Status = 'EOS';  Note = 'End of service since Oct 2023 (Home/Pro), Oct 2024 (Enterprise)' }
-    '22621' = @{ Display = '22H2';  Product = 'Windows 11'; Status = 'EXT';  Note = 'Home/Pro EOS Oct 2024. Enterprise extended to Oct 2025.' }
-    '22631' = @{ Display = '23H2';  Product = 'Windows 11'; Status = 'OK';   Note = 'In service. Home/Pro EOS Nov 2025, Enterprise Nov 2026.' }
+    '22621' = @{ Display = '22H2';  Product = 'Windows 11'; Status = 'EOS';  Note = 'End of service since Oct 2024 (Home/Pro), Oct 2025 (Enterprise). Feature update required.' }
+    '22631' = @{ Display = '23H2';  Product = 'Windows 11'; Status = 'EXT';  Note = 'Home/Pro EOS Nov 2025. Enterprise extended to Nov 2026. Plan feature update.' }
     '26100' = @{ Display = '24H2';  Product = 'Windows 11'; Status = 'OK';   Note = 'In service. Home/Pro EOS Oct 2026, Enterprise Oct 2027.' }
-    '26200' = @{ Display = '25H2';  Product = 'Windows 11'; Status = 'OK';   Note = 'In service (2025 Update). Delivered as enablement package from 24H2.' }
+    '26200' = @{ Display = '25H2';  Product = 'Windows 11'; Status = 'OK';   Note = 'In service (2025 Update). Home/Pro EOS Oct 2027, Enterprise Oct 2028.' }
 
 }
 

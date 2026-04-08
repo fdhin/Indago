@@ -69,6 +69,7 @@ Key features:
         'Scriptlets\BL006_BLPolicyConflict.ps1',
         'Scriptlets\BL007_BLEventAnalysis.ps1',
         'Scriptlets\BL008_BLReadinessCheck.ps1',
+        'Scriptlets\BL009_BLTpmRemediation.ps1',
         'Scriptlets\DEF001_DEFStatusTriage.ps1',
         'Scriptlets\DEF002_DEFDefinitionHealth.ps1',
         'Scriptlets\DEF003_DEFThirdPartyAV.ps1',
@@ -76,6 +77,7 @@ Key features:
         'Scriptlets\DEF005_DEFPolicyConflict.ps1',
         'Scriptlets\DEF006_DEFPlatformVersion.ps1',
         'Scriptlets\DEF007_DEFEventAnalysis.ps1',
+        'Scriptlets\DEF008_DEFRemediation.ps1',
         'Scriptlets\FW001_FWStatusTriage.ps1',
         'Scriptlets\FW002_FWPolicyConflict.ps1',
         'Scriptlets\FW003_FWThirdParty.ps1',
@@ -89,6 +91,7 @@ Key features:
         'Scriptlets\WU005_WUComponentHealth.ps1',
         'Scriptlets\WU006_WUEventTimeline.ps1',
         'Scriptlets\WU007_WUEnvironmentAudit.ps1',
+        'Scriptlets\WU009_WUServiceReset.ps1',
         'Tests\Invoke-SelfTest.ps1',
         'Tests\Test-InvokeAsUser.ps1',
         'Tests\Test-InvokeIndago.ps1',
@@ -158,7 +161,7 @@ Complete Tier 5 diagnostic suite -- 30 scriptlets across 5 categories.
 - DEF006 DEFPlatformVersion: Platform/engine/definition version audit, event log warnings, update services
 - DEF007 DEFEventAnalysis: Defender event log timeline from Operational log with 26-event taxonomy
 
-### BitLocker Suite (8 scriptlets)
+### BitLocker Suite (9 scriptlets)
 - BL001 BLStatusSnapshot: Volume status, ghost-state detection, BDESVC health
 - BL002 BLTpmHealth: TPM presence, spec version, firmware CVEs, lockout, provisioning readiness
 - BL003 BLHardwarePrereqs: UEFI/Secure Boot, GPT, system partition, Modern Standby, OEM quirks
@@ -167,6 +170,7 @@ Complete Tier 5 diagnostic suite -- 30 scriptlets across 5 categories.
 - BL006 BLPolicyConflict: GPO vs MDM conflict detection, cipher/TPM decode, orphaned GPO settings
 - BL007 BLEventAnalysis: Event log timeline, 16 tracked Event IDs, HRESULT translation map
 - BL008 BLReadinessCheck: Encryption readiness dry run with go/no-go verdict
+- BL009 BLTpmRemediation: TPM & key protector remediation, stale protector cleanup, escrow
 
 ### Firewall Suite (4 scriptlets)
 - FW001 FWStatusTriage: Profile status, adapter correlation, Security Center cross-reference, MpsSvc
