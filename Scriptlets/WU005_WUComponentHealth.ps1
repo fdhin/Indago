@@ -1,6 +1,6 @@
 # WU005_WUComponentHealth.ps1
 # Scriptlet: WU005 - Component Store & System Integrity
-# Context: System | Version: 1.2
+# Context: System | Version: 1.3
 
 $ErrorActionPreference = 'SilentlyContinue'
 Write-Output ''
@@ -78,11 +78,11 @@ if (Test-Path -Path $cbsLogPath) {
     try {
         $cbsTempPath = Join-Path -Path $env:TEMP -ChildPath "Indago_CBS_$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
         Copy-Item -Path $cbsLogPath -Destination $cbsTempPath -Force -ErrorAction Stop
-        $cbsLines = Get-Content -Path $cbsTempPath -Tail 5000 -ErrorAction Stop
+        $cbsLines = @(Get-Content -Path $cbsTempPath -Tail 5000 -ErrorAction Stop)
     } catch {
         # Copy failed (rare exclusive lock); fall back to direct read
         try {
-            $cbsLines = Get-Content -Path $cbsLogPath -Tail 5000 -ErrorAction Stop
+            $cbsLines = @(Get-Content -Path $cbsLogPath -Tail 5000 -ErrorAction Stop)
         } catch { }
     }
 }
@@ -107,29 +107,38 @@ if ($null -ne $cbsLines -and $cbsLines.Count -gt 0) {
         $textHits     = [System.Collections.Generic.List[string]]::new()
         foreach ($line in $cbsTail) {
             $lineStr = "$line"
+            $matched = $false
             foreach ($cp in $criticalPatterns) {
                 if ($lineStr -match $cp.Code) {
                     $trimmed = $lineStr.Trim()
                     if ($trimmed.Length -gt 120) { $trimmed = $trimmed.Substring(0, 117) + '...' }
                     $null = $criticalHits.Add("$($cp.Code) ($($cp.Name)): $trimmed")
+                    $matched = $true
+                    break
                 }
             }
-            foreach ($wp in $warningPatterns) {
-                if ($lineStr -match $wp.Code) {
+            if (-not $matched) {
+                foreach ($wp in $warningPatterns) {
+                    if ($lineStr -match $wp.Code) {
+                        $trimmed = $lineStr.Trim()
+                        if ($trimmed.Length -gt 120) { $trimmed = $trimmed.Substring(0, 117) + '...' }
+                        $null = $warningHits.Add("$($wp.Code) ($($wp.Name)): $trimmed")
+                        $matched = $true
+                        break
+                    }
+                }
+            }
+            if (-not $matched) {
+                if ($lineStr -match '(?<![a-zA-Z])[Ss]tore corruption') {
                     $trimmed = $lineStr.Trim()
                     if ($trimmed.Length -gt 120) { $trimmed = $trimmed.Substring(0, 117) + '...' }
-                    $null = $warningHits.Add("$($wp.Code) ($($wp.Name)): $trimmed")
+                    $null = $textHits.Add("Store corruption: $trimmed")
                 }
-            }
-            if ($lineStr -match '[Ss]tore corruption') {
-                $trimmed = $lineStr.Trim()
-                if ($trimmed.Length -gt 120) { $trimmed = $trimmed.Substring(0, 117) + '...' }
-                $null = $textHits.Add("Store corruption: $trimmed")
-            }
-            if ($lineStr -match 'Exec:\s*Error') {
-                $trimmed = $lineStr.Trim()
-                if ($trimmed.Length -gt 120) { $trimmed = $trimmed.Substring(0, 117) + '...' }
-                $null = $textHits.Add("Exec Error: $trimmed")
+                elseif ($lineStr -match 'Exec:\s*Error') {
+                    $trimmed = $lineStr.Trim()
+                    if ($trimmed.Length -gt 120) { $trimmed = $trimmed.Substring(0, 117) + '...' }
+                    $null = $textHits.Add("Exec Error: $trimmed")
+                }
             }
         }
         $totalCritical = $criticalHits.Count + $textHits.Count
@@ -174,7 +183,7 @@ if ($null -ne $cbsLines -and $cbsLines.Count -gt 0) {
         }
     } catch {
         Write-Output '[i]   CBS.log'
-        Write-Output "       Cannot read CBS.log: $($_.Exception.Message)"
+        Write-Output "       Cannot analyze CBS.log: $($_.Exception.Message)"
     }
 } else {
     if (-not (Test-Path -Path $cbsLogPath)) {
@@ -276,7 +285,13 @@ try {
         if ($analyzeText -match 'Component Store Cleanup Recommended\s*:\s*(\w+)') { $cleanupRec = $Matches[1].Trim() }
         if ($analyzeText -match 'Date of Last Cleanup\s*:\s*(.+)') { $lastCleanup = $Matches[1].Trim() }
         $cleanupNeeded = ($cleanupRec -eq 'Yes')
-        if ($cleanupNeeded) { Write-Output '[!]   Component Store Analysis' } else { Write-Output '[OK]  Component Store Analysis' }
+        if ($actualSize.Length -eq 0 -and $reportedSize.Length -eq 0) {
+            # DISM exited 0 but output could not be parsed (unexpected format or /English not honored)
+            Write-Output '[!]   Component Store Analysis'
+            Write-Output '       DISM exited successfully but output could not be parsed.'
+            Write-Output '       Run dism.exe /Online /Cleanup-Image /AnalyzeComponentStore manually.'
+            $warnCount++
+        } elseif ($cleanupNeeded) { Write-Output '[!]   Component Store Analysis' } else { Write-Output '[OK]  Component Store Analysis' }
         if ($actualSize.Length -gt 0 -and $reportedSize.Length -gt 0) { Write-Output "       Actual size: $actualSize (reported: $reportedSize due to hard links)." }
         elseif ($actualSize.Length -gt 0) { Write-Output "       Actual size: $actualSize." }
         if ($sharedSize.Length -gt 0 -and $backupsSize.Length -gt 0) { Write-Output "       Shared with Windows: $sharedSize. Backups/disabled: $backupsSize." }

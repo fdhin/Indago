@@ -330,8 +330,8 @@
       "component-store",
       "diagnostic"
     ],
-    "Version": "1.2",
-    "Notes": "v1.2: Fixed CBS.log file lock issue -- copies to temp before reading to bypass TrustedInstaller locks during servicing, with direct-read fallback. Increased CBS analysis depth from Tail 200 to Tail 5000 (200 lines covers fractions of a second during active servicing). Consolidated two separate CBS.log reads into one shared buffer. v1.1: Added /English flag to dism.exe, exit code validation, SFC elseif priority chain. v1.0: Read-only diagnostic.",
+    "Version": "1.3",
+    "Notes": "v1.3: Fixed CBS.log duplicate counting -- one match per line max with priority cascade (critical > warning > text), added break in inner loops, used negative lookbehind on Store corruption regex to avoid 'restore' false positives, forced @() array on Get-Content for PS 5.1 scalar safety, fixed misleading catch message, added DISM parse validation (warns instead of false OK when output can't be parsed). v1.2: CBS.log temp-file copy, Tail 5000, consolidated reads. v1.1: /English flag, exit code, SFC elseif. Note: CBS.log and [SR] entries are always written in English by TrustedInstaller regardless of system locale. v1.0: Read-only diagnostic.",
     "ScriptFile": "WU005_WUComponentHealth.ps1"
   },
   {
