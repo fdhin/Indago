@@ -1,6 +1,6 @@
 # WU005_WUComponentHealth.ps1
 # Scriptlet: WU005 - Component Store & System Integrity
-# Context: System | Version: 1.0
+# Context: System | Version: 1.2
 
 $ErrorActionPreference = 'SilentlyContinue'
 Write-Output ''
@@ -40,10 +40,10 @@ try {
 } catch { }
 if (-not $dismHealthDone) {
     try {
-        $dismExeOutput = & dism.exe /Online /Cleanup-Image /CheckHealth 2>&1
+        $dismExeOutput = & dism.exe /Online /Cleanup-Image /CheckHealth /English 2>&1
         $dismExitCode = $LASTEXITCODE
         $dismText = ($dismExeOutput | Out-String).Trim()
-        if ($dismText -match 'No component store corruption detected') {
+        if ($dismExitCode -eq 0 -and $dismText -match 'No component store corruption detected') {
             Write-Output '[OK]  Component Store Health (Registry Flags)'
             Write-Output '       No component store corruption detected. Store is healthy.'
             Write-Output '       Note: This checks registry state only. CBS.log analysis (below)'
@@ -69,9 +69,27 @@ if (-not $dismHealthDone) {
 Write-Output ''
 Write-Output '--- CBS.log Analysis ---'
 $cbsLogPath = Join-Path -Path $env:SystemRoot -ChildPath 'Logs\CBS\CBS.log'
+$cbsTempPath = $null
+$cbsLines = $null
+
+# Read CBS.log once for both CBS analysis and SFC result parsing.
+# Copy to temp first to bypass TrustedInstaller file locks during servicing.
 if (Test-Path -Path $cbsLogPath) {
     try {
-        $cbsTail = Get-Content -Path $cbsLogPath -Tail 200 -ErrorAction Stop
+        $cbsTempPath = Join-Path -Path $env:TEMP -ChildPath "Indago_CBS_$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
+        Copy-Item -Path $cbsLogPath -Destination $cbsTempPath -Force -ErrorAction Stop
+        $cbsLines = Get-Content -Path $cbsTempPath -Tail 5000 -ErrorAction Stop
+    } catch {
+        # Copy failed (rare exclusive lock); fall back to direct read
+        try {
+            $cbsLines = Get-Content -Path $cbsLogPath -Tail 5000 -ErrorAction Stop
+        } catch { }
+    }
+}
+
+if ($null -ne $cbsLines -and $cbsLines.Count -gt 0) {
+    try {
+        $cbsTail = $cbsLines
         $criticalPatterns = @(
             @{ Code = '0x80073712'; Name = 'ERROR_SXS_COMPONENT_STORE_CORRUPT' },
             @{ Code = '0x800F081F'; Name = 'CBS_E_SOURCE_MISSING' },
@@ -117,7 +135,7 @@ if (Test-Path -Path $cbsLogPath) {
         $totalCritical = $criticalHits.Count + $textHits.Count
         $totalWarning  = $warningHits.Count
         if ($totalCritical -gt 0) {
-            Write-Output "[!!]  CBS.log (Last 200 Lines)"
+            Write-Output "[!!]  CBS.log (Last 5000 Lines)"
             Write-Output "       $totalCritical critical corruption pattern(s) found."
             $shown = 0
             foreach ($hit in $criticalHits) {
@@ -136,7 +154,7 @@ if (Test-Path -Path $cbsLogPath) {
             }
             $issueCount++
         } elseif ($totalWarning -gt 0) {
-            Write-Output "[!]   CBS.log (Last 200 Lines)"
+            Write-Output "[!]   CBS.log (Last 5000 Lines)"
             Write-Output "       $totalWarning warning pattern(s) found (sharing violations, SSU issues)."
             $shown = 0
             foreach ($hit in $warningHits) {
@@ -151,7 +169,7 @@ if (Test-Path -Path $cbsLogPath) {
             Write-Output '       These may indicate transient issues. If updates are failing, run WU010.'
             $warnCount++
         } else {
-            Write-Output '[OK]  CBS.log (Last 200 Lines)'
+            Write-Output '[OK]  CBS.log (Last 5000 Lines)'
             Write-Output '       No corruption patterns found in recent CBS activity.'
         }
     } catch {
@@ -159,9 +177,15 @@ if (Test-Path -Path $cbsLogPath) {
         Write-Output "       Cannot read CBS.log: $($_.Exception.Message)"
     }
 } else {
-    Write-Output '[i]   CBS.log'
-    Write-Output "       CBS.log not found at $cbsLogPath."
-    Write-Output '       This is unusual. The CBS log should always exist on Windows 10/11.'
+    if (-not (Test-Path -Path $cbsLogPath)) {
+        Write-Output '[i]   CBS.log'
+        Write-Output "       CBS.log not found at $cbsLogPath."
+        Write-Output '       This is unusual. The CBS log should always exist on Windows 10/11.'
+    } else {
+        Write-Output '[i]   CBS.log'
+        Write-Output '       CBS.log exists but could not be read (file may be locked by TrustedInstaller).'
+        Write-Output '       Re-run this check when no updates are being installed or staged.'
+    }
 }
 Write-Output ''
 Write-Output '--- Last SFC Result ---'
@@ -169,30 +193,30 @@ $sfcResultFound = $false
 $sfcStatus = ''
 $sfcDetail = ''
 $sfcTimestamp = ''
-if (Test-Path -Path $cbsLogPath) {
+if ($null -ne $cbsLines -and $cbsLines.Count -gt 0) {
     try {
-        $sfcLines = Get-Content -Path $cbsLogPath -Tail 5000 -ErrorAction Stop
+        $sfcLines = $cbsLines
         for ($i = $sfcLines.Count - 1; $i -ge 0; $i--) {
             $lineStr = "$($sfcLines[$i])"
             if ($lineStr -match '\[SR\]') {
-                if ($lineStr -match 'did not find any integrity violations') {
-                    $sfcStatus = 'OK'
-                    $sfcDetail = 'SFC found no integrity violations. All protected files match their manifests.'
-                    $sfcResultFound = $true
-                }
-                if ($lineStr -match 'found corrupt files and successfully repaired') {
-                    $sfcStatus = 'INFO'
-                    $sfcDetail = 'SFC found and repaired corrupt files. Store had corruption but self-healed.'
-                    $sfcResultFound = $true
-                }
                 if ($lineStr -match 'found corrupt files but was unable to fix') {
                     $sfcStatus = 'ISSUE'
                     $sfcDetail = 'SFC found UNFIXABLE corruption. Run WU010 WUServicingRepair.'
                     $sfcResultFound = $true
                 }
-                if ($lineStr -match 'could not perform the requested operation') {
+                elseif ($lineStr -match 'could not perform the requested operation') {
                     $sfcStatus = 'WARN'
                     $sfcDetail = 'SFC could not run. Possible pending reboot or TrustedInstaller issue.'
+                    $sfcResultFound = $true
+                }
+                elseif ($lineStr -match 'found corrupt files and successfully repaired') {
+                    $sfcStatus = 'INFO'
+                    $sfcDetail = 'SFC found and repaired corrupt files. Store had corruption but self-healed.'
+                    $sfcResultFound = $true
+                }
+                elseif ($lineStr -match 'did not find any integrity violations') {
+                    $sfcStatus = 'OK'
+                    $sfcDetail = 'SFC found no integrity violations. All protected files match their manifests.'
                     $sfcResultFound = $true
                 }
                 if ($sfcResultFound) {
@@ -233,7 +257,7 @@ if ($sfcResultFound) {
 Write-Output ''
 Write-Output '--- Component Store Size ---'
 try {
-    $analyzeOutput = & dism.exe /Online /Cleanup-Image /AnalyzeComponentStore 2>&1
+    $analyzeOutput = & dism.exe /Online /Cleanup-Image /AnalyzeComponentStore /English 2>&1
     $analyzeExitCode = $LASTEXITCODE
     $analyzeText = ($analyzeOutput | Out-String)
     if ($analyzeExitCode -eq 0) {
@@ -292,3 +316,8 @@ Write-Output '        If component store large -> run: DISM /Online /Cleanup-Ima
 Write-Output '        If SFC found unfixable   -> run WU010 WUServicingRepair for full repair chain'
 Write-Output '        If clean                 -> issue is elsewhere; run WU006 WUEventTimeline'
 Write-Output ''
+
+# Clean up temp CBS.log copy
+if ($null -ne $cbsTempPath -and (Test-Path -Path $cbsTempPath)) {
+    Remove-Item -Path $cbsTempPath -Force -ErrorAction SilentlyContinue
+}

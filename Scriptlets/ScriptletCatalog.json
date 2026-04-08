@@ -330,8 +330,8 @@
       "component-store",
       "diagnostic"
     ],
-    "Version": "1.0",
-    "Notes": "Read-only diagnostic. 4 check groups: DISM health (Repair-WindowsImage -CheckHealth with dism.exe fallback, reports ImageHealthState enum, notes registry-only limitation), CBS.log analysis (tail 200 lines, 8 corruption HRESULTs from research: 0x80073712/0x800F081F/0x800F0831/0x800736CC critical, 0x800F0823/0x800F0982/0x8007000D/0x80070020 warning, plus Store corruption and Exec Error text markers), last SFC result (5000 line scan depth, [SR] tag parsing, 4 outcome strings), component store sizing (dism.exe /AnalyzeComponentStore stdout regex, 6 metrics including last cleanup date). Does not check services (WU001), policies (WU002), network (WU003), TLS (WU004), or event timeline (WU006). Does not run SFC or DISM repairs (WU010).",
+    "Version": "1.2",
+    "Notes": "v1.2: Fixed CBS.log file lock issue -- copies to temp before reading to bypass TrustedInstaller locks during servicing, with direct-read fallback. Increased CBS analysis depth from Tail 200 to Tail 5000 (200 lines covers fractions of a second during active servicing). Consolidated two separate CBS.log reads into one shared buffer. v1.1: Added /English flag to dism.exe, exit code validation, SFC elseif priority chain. v1.0: Read-only diagnostic.",
     "ScriptFile": "WU005_WUComponentHealth.ps1"
   },
   {
@@ -449,7 +449,12 @@
     "Description": "Pulls and correlates Defender events to build a timeline of protection state changes and threat activity. Queries Operational log for scan events (start/complete/cancel/fail), definition updates (success/fail), configuration changes (Event 5007), and service health heartbeats (Event 1150). Queries threat events (detection, remediation success/failure, quarantine operations) with ThreatStatusID decode and AdditionalActionsBitMask decode. Queries SecurityCenter events from Application log (Event 15/16/17) for state changes and WMI sync failures. Queries WHC log if available. Extracts HRESULTs from event payloads with 10-entry embedded translation map and scriptlet routing.",
     "ExecutionContext": "System",
     "Parameters": {
-      "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+      "Param1": {
+        "Name": "DaysBack",
+        "Description": "Number of days of event history to pull (max: 90).",
+        "Required": false,
+        "Default": "7"
+      }
     },
     "Tags": [
       "defender",
@@ -530,7 +535,12 @@
     "Description": "Builds a chronological timeline of BitLocker encryption lifecycle events and translates error codes into actionable explanations. Queries 3 log channels: BitLocker-API/Management (encryption start/complete, key protector generation, TPM sealing, escrow success/fail, silent encryption failure, WinRE/TPM blockers, rollback, suspension, decryption), BitLocker-API/Operational (low-level API errors and driver failures), and System log (TPM/TPM-WMI hardware events including dictionary attack lockout). Optionally queries DrivePreparationTool/Operational if available. 11-entry embedded HRESULT translation map with scriptlet routing.",
     "ExecutionContext": "System",
     "Parameters": {
-      "Param1": "DaysBack -- number of days of event history to pull (default: 7, max: 90)"
+      "Param1": {
+        "Name": "DaysBack",
+        "Description": "Number of days of event history to pull (max: 90).",
+        "Required": false,
+        "Default": "7"
+      }
     },
     "Tags": [
       "bitlocker",
