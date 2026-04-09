@@ -1,6 +1,6 @@
 # BL009_BLTpmRemediation.ps1
 # Scriptlet: BL009 - TPM & Key Protector Remediation
-# Context: System | Version: 1.2
+# Context: System | Version: 1.3
 
 $ErrorActionPreference = 'Continue'
 $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -802,7 +802,7 @@ if ($doGenerateKey) {
                     try {
                         $tenMinAgo = (Get-Date).AddMinutes(-10)
                         $escrowEvent = Get-WinEvent -FilterHashtable @{
-                            LogName   = 'Microsoft-Windows-BitLocker/BitLocker Management'
+                            LogName   = 'Microsoft-Windows-BitLocker-API/Management'
                             Id        = 845
                             StartTime = $tenMinAgo
                         } -MaxEvents 1 -ErrorAction Stop
